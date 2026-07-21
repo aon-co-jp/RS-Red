@@ -1,9 +1,9 @@
-# 開発方針＆開発環境ルール(RRedmine)
+# 開発方針＆開発環境ルール(RS-Chiketto)
 
 作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
 `CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
-GitHubリポジトリ: [aon-co-jp/RRedmine](https://github.com/aon-co-jp/RRedmine)。
-VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21)。
+GitHubリポジトリ: [aon-co-jp/RS-Chiketto](https://github.com/aon-co-jp/RS-Chiketto)。
+VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07-21)。
 
 ## このプロジェクトの役割
 
@@ -22,7 +22,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
   自動判定)を先行実装として参照。特に「正直な開示」「段階的実装」
   「型チェックだけで完了と報告しない・実機検証必須」の3方針は共通。
 - **`RJSON`**(依存を絞った設計、`light`/`full`のfeature分離)も
-  参照——RRedmine側で構造化データ処理が必要になった際の候補。
+  参照——RS-Chiketto側で構造化データ処理が必要になった際の候補。
 
 ## Redmineの主要機能(着手時の優先順位付けの参考)
 
@@ -35,7 +35,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
 
 ## 方針決定事項(2026-07-21、ユーザー確認済み)
 
-- **着手順番**: `RRedmine`・`RWordPress`・`RS-EC`は同時並行ではなく
+- **着手順番**: `RS-Chiketto`・`RS-Blog`・`RS-EC`は同時並行ではなく
   **1つずつ順番に、`RGit`と同じ深さまで作り込んでから次へ**進める。
   どれを最初にするかは次回セッション冒頭で決定。
 - **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB、
@@ -48,7 +48,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
 - **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
   `open-web-server`・`aruaru-llm`・RPoem/RCosmo・`open-web-server`と
   同じ設計思想により、`aruaru-db`/PostgreSQL接続は**1インスタンスを
-  複数ドメイン(RRedmine自身も含め、将来の`RWordPress`/`RS-EC`他)が
+  複数ドメイン(RS-Chiketto自身も含め、将来の`RS-Blog`/`RS-EC`他)が
   共有**する。ドメイン・プロジェクトを追加するたびに個別にDBを
   インストール・起動する必要はない。実装時は`aruaru-llm`の
   `src/tenants.rs`(`TenantRegistry`、`RwLock`によるプロセス内共有状態、
@@ -56,7 +56,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
   **管理は`open-easy-web`側から行う**(ユーザー指示、2026-07-21追記)
   ——`aruaru-llm`が`open-easy-web/server/src/appserver_registration.rs`の
   `AppServerKind::AruaruLlm`/`register_aruaru_llm()`経由でテナント登録
-  される設計と同じパターンで、`RRedmine`(および将来の`RWordPress`/
+  される設計と同じパターンで、`RS-Chiketto`(および将来の`RS-Blog`/
   `RS-EC`)用の`AppServerKind`variantを追加し、ドメイン追加を
   `open-easy-web`の「サイト管理」画面から一元管理できるようにする。
   **非同期・マルチCPU/マルチコア/マルチスレッド対応**:
