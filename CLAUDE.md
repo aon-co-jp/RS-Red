@@ -74,6 +74,28 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     (3) `RGit`と同じ認証・アクセス制御の再利用可否の検討、
     (4) `aruaru-db`との接続方式の設計。
 
+- **2026-07-21(続き) v0.1.0ブートストラップ完了: チケットCRUD+OTP認証**
+  (ユーザー指示「RS-Chikettoから着手」、`RGit`と`RS-Chiketto`のブート
+  ストラップを並行して進めた1つ):
+  1. `RGit`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTPログイン機構、
+     環境変数名のみ`RSCHIKETTO_*`に変更)。v0.1.0時点では管理者アカウント
+     のみログイン可能(`RGit`にある登録アカウント制・アクセス制御の
+     細分化はまだ移植していない、次回以降の増分)。
+  2. チケット(Issue)のCRUD: `POST/GET /api/tickets`・
+     `GET/PUT /api/tickets/:id`。ステータスは`open`/`in_progress`/
+     `closed`の3値。永続化はJSONファイル(`aruaru-db`/PostgreSQL DUAL DB
+     構成への移行はまだ未着手——今回は動くMVPを優先)。
+  3. **検証**: `cargo build`警告0件、`cargo test` 6件全green
+     (auth関連、`RGit`からそのまま移植したテスト)。実バイナリで
+     E2E確認: 未ログインでの`GET /api/tickets`→`401`、実SMTP経由の
+     OTPログイン→チケット作成(`201`)→一覧取得→ステータス更新
+     (`open`→`closed`)まで実HTTPで一連の動作を確認済み。
+  - 次にすべきこと: (1) プロジェクト・サブプロジェクト階層の追加、
+    (2) `RGit`にある登録アカウント制・アクセス制御(閲覧/編集の個別
+    許可)の移植、(3) Wiki・ガントチャート等の追加機能、(4) `aruaru-db`/
+    PostgreSQL DUAL DB構成への移行(現状はJSONファイル永続化)、
+    (5) GitHubへの初回push・VPSデプロイ。
+
 
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
