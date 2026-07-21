@@ -109,6 +109,58 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     PostgreSQL DUAL DB構成への移行(現状はJSONファイル永続化)、
     (5) GitHubへの初回push・VPSデプロイ。
 
+- **2026-07-21(続き) 登録アカウント制・アクセス制御を`main.rs`へ配線
+  (`RGit`の設計をそのまま踏襲、上記(2)の着手分、コミット`53d4cb8`)**:
+  1. `mod access; mod accounts;`を追加、`AppState`に
+     `accounts_locked`(`RSCHIKETTO_ACCOUNTS_LOCKED`、既定`true`——
+     `RGit`の`RGIT_ACCOUNTS_LOCKED`と同じ方針)を追加。
+  2. `Ticket`に`project: String`(単純な文字列ラベル)を追加し、
+     `access::is_allowed`経由で閲覧(`GET /api/tickets`は所属
+     プロジェクトごとにフィルタ、`GET /api/tickets/:id`は403/401)・
+     編集(`POST`/`PUT`)にアクセス制御を適用。プロジェクト名から
+     `access.rs`の`project_id: u64`への変換は`DefaultHasher`による
+     ハッシュ値(v0.1.0時点ではProject自体のCRUDは無い、正直な開示:
+     ハッシュ衝突は理論上ゼロではないが実用上無視できる程度という
+     判断——将来Project CRUDを追加する際は連番IDに置き換える)。
+  3. `request_otp`を`accounts::AccountStore`の登録メールにも対応
+     (管理者 OR 登録済みアカウント、`RGit`と同じ判定)。
+  4. `POST/GET /api/accounts`・`POST /api/accounts/request`
+     (認証不要)・`GET /api/accounts/requests`・
+     `POST /api/accounts/requests/:id/decide`を`RGit`と同じ形状で追加。
+     `decide`は承認時に`project`が指定されていればそのプロジェクトの
+     `access::AccessConfig::accounts`へ閲覧/編集許可を書き込む。
+     `accounts_locked`中は管理者メール以外の登録・承認申請の承認を
+     `403`で拒否。
+  5. `mail.rs`に`send_access_request_notice`/`send_access_decision`を
+     追加(申請受付時に管理者へ、審査結果を申請者へSMTP通知、
+     `RGit`と同じ)。
+  6. **検証**: `cargo build`警告0件。`cargo test` **12件全green**
+     (既存9件+`accounts`モジュール新規2件〈JSON永続化の往復・
+     ファイル未存在時のデフォルト読み込み〉+既存の重複を除く)。
+     **正直な開示**: 今回追加した`accounts`モジュールの単体テストは
+     ストレージ層(JSON往復)のみで、HTTPハンドラレベルの統合テスト
+     (ログイン可否・401/403の切り分け・承認フロー)は今回書いていない
+     ——実バイナリでのcurlスモークテストで代替検証した(下記)。
+     次回、`poem`のテストクライアントを使ったハンドラレベルの
+     自動テストを追加すべき。
+     実バイナリ起動(`RSCHIKETTO_DATA_DIR`一時ディレクトリ、
+     `RSCHIKETTO_ADMIN_EMAIL=admin@example.com`、SMTP未設定)での
+     `curl`スモークテスト: `GET /healthz`→`200`、`GET /api/tickets`
+     (未ログイン)→`200`(空配列、フィルタ設計通り)、
+     `POST /api/auth/request-otp`(未登録メール)→`403`、
+     (管理者メール、SMTP未設定)→`503`、
+     `POST /api/accounts/request`(認証不要)→`201`、
+     `POST/GET /api/accounts`(未認証)→ともに`401`、を確認。
+     **SMTPが無い環境のため、実OTPメール送受信を伴うログイン成功
+     パス・`decide_access_request`の承認フルE2Eは未検証**(コード
+     レビューと401/403系の実HTTP確認までに留まる、正直な開示)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→チケット作成
+    フルE2E(登録アカウント・自己申請承認を含む)、(2) `poem`テスト
+    クライアントによるハンドラレベルの自動テスト追加、
+    (3) Project自体のCRUD(現状は文字列ラベル+ハッシュのみ)、
+    (4) VPSへのデプロイ(今回は未実施)、(5) Wiki・ガントチャート等
+    の追加機能、(6) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
+
 
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
