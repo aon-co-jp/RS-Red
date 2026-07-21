@@ -71,3 +71,38 @@ pub async fn send_otp(config: SmtpConfig, to: String, code: String) -> Result<()
         .await
         .map_err(|e| MailError::Send(format!("task panicked: {e}")))?
 }
+
+/// 誰かが`POST /api/accounts/request`でアクセス許可を申請したことを
+/// 管理者へ通知する。
+pub async fn send_access_request_notice(
+    config: SmtpConfig,
+    admin_email: String,
+    request_email: String,
+    message: Option<String>,
+) -> Result<(), MailError> {
+    let message_line = message.as_deref().unwrap_or("(メッセージなし)");
+    let body = format!(
+        "RS-Chikettoへのアクセス許可申請が届きました。\n\n\
+         申請者メール: {request_email}\n\
+         メッセージ: {message_line}\n\n\
+         管理者としてログインし、GET /api/accounts/requests で申請一覧を確認、\n\
+         POST /api/accounts/requests/:id/decide で閲覧/編集を個別に選んで\n\
+         許可・不許可を決定してください。"
+    );
+    tokio::task::spawn_blocking(move || build_and_send(&config, &admin_email, "RS-Chiketto アクセス許可申請", body))
+        .await
+        .map_err(|e| MailError::Send(format!("task panicked: {e}")))?
+}
+
+/// アクセス許可申請の審査結果(承認/却下)を申請者へ通知する。
+pub async fn send_access_decision(config: SmtpConfig, to: String, approved: bool) -> Result<(), MailError> {
+    let body = if approved {
+        "RS-Chikettoへのアクセス申請が承認されました。付与された権限の範囲でログイン・操作が可能です。".to_string()
+    } else {
+        "RS-Chikettoへのアクセス申請は承認されませんでした。".to_string()
+    };
+    let subject = if approved { "RS-Chiketto アクセス申請: 承認されました" } else { "RS-Chiketto アクセス申請: 却下されました" };
+    tokio::task::spawn_blocking(move || build_and_send(&config, &to, subject, body))
+        .await
+        .map_err(|e| MailError::Send(format!("task panicked: {e}")))?
+}
