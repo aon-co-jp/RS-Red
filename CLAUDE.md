@@ -161,6 +161,34 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     (4) VPSへのデプロイ(今回は未実施)、(5) Wiki・ガントチャート等
     の追加機能、(6) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
 
+- **2026-07-21(続き) `poem::test::TestClient`によるハンドラレベル統合
+  テストを追加(上記(2)の宿題への対応)**:
+  1. `main.rs`のルーティング定義を`build_routes(state: AppState) ->
+     impl poem::Endpoint`として切り出し、`main()`とテストの両方から
+     再利用できるようにした。
+  2. `Cargo.toml`の`poem`依存に`features = ["test"]`を追加
+     (`poem::test::TestClient`を使うために必須、当初
+     `unresolved import poem::test`でビルド失敗していたため修正)。
+  3. `#[cfg(test)] mod handler_tests`を`main.rs`末尾に追加、4件:
+     - 未認証`GET /api/tickets`→`200`・空配列(既存のプロジェクト単位
+       フィルタ設計通り、401ではないことを確認)。
+     - `POST /api/accounts/request`(自己申請・認証不要)→`201`、
+       `pending_requests`に登録されることを確認。
+     - 管理者セッションで`decide`承認→`access::AccessConfig`へ
+       期待した`allow_view`/`allow_edit`が書き込まれることを確認。
+     - `accounts_locked=true`時、管理者以外の承認対象を管理者セッションで
+       承認しようとすると`403`になることを確認(`AppState`をテスト
+       ローカルに構築、プロセス環境変数`RSCHIKETTO_ACCOUNTS_LOCKED`は
+       変更していない)。
+     各テストは`std::env::temp_dir()`配下に一意な一時ディレクトリを
+     `data_root`として使い、テスト間の状態共有を避けている。
+  4. **検証**: `cargo build`警告0件、`cargo test` **16件全green**
+     (既存12件+今回追加4件)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→チケット作成
+    フルE2E、(2) Project自体のCRUD、(3) VPSへのデプロイ(今回は未実施)、
+    (4) Wiki・ガントチャート等の追加機能、(5) `aruaru-db`/PostgreSQL
+    DUAL DB構成への移行。
+
 
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
