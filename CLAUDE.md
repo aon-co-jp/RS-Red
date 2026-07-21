@@ -99,6 +99,16 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
   層(旧poem-cosmo-tauri)。`open-raid-z`とVersionlessAPIによる
   バージョンレス運用、`aruaru-db`とのDUAL DATABASE構成の先行実装。
 
+- Python製AIライブラリのRust移植ハイブリッド/トライブリッド版
+  (マーケティング調査での1〜6位、vLLM/Transformers/NumPy/PyTorch互換/
+  scikit-learn/Whisper相当の良いとこ取り)——**Rustを基本とし、必要なら
+  `RPoem`(アプリケーションサーバー層)も併用する**(ユーザー指示、
+  2026-07-21追記)。`open-cuda`ワークスペース内の`opencuda-blas`
+  (NumPy相当)・`opencuda-bert`(Transformers推論パス相当、実装済み)が
+  このトライブリッド化の実体。今後の`opencuda-llm`(vLLM相当、生成
+  デコーダ追加時)を、必要であれば`RPoem`上のHTTPサービスとして
+  提供することも視野に入れる。
+
 **理由**: これらは3プロジェクトが実際に依存する基盤コンポーネント
 (DB層・GPU計算基盤・「分身の術」共有構成・アプリケーションサーバー層)
 であり、基盤側の完成を待ってから3プロジェクトに着手するのではなく、
