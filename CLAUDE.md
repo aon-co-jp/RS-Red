@@ -35,7 +35,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
 
 ## 方針決定事項(2026-07-21、ユーザー確認済み)
 
-- **着手順番**: `RRedmine`・`RWordPress`・`REC-CUBE`は同時並行ではなく
+- **着手順番**: `RRedmine`・`RWordPress`・`RS-EC`は同時並行ではなく
   **1つずつ順番に、`RGit`と同じ深さまで作り込んでから次へ**進める。
   どれを最初にするかは次回セッション冒頭で決定。
 - **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB、
@@ -48,7 +48,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
 - **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
   `open-web-server`・`aruaru-llm`・RPoem/RCosmo・`open-web-server`と
   同じ設計思想により、`aruaru-db`/PostgreSQL接続は**1インスタンスを
-  複数ドメイン(RRedmine自身も含め、将来の`RWordPress`/`REC-CUBE`他)が
+  複数ドメイン(RRedmine自身も含め、将来の`RWordPress`/`RS-EC`他)が
   共有**する。ドメイン・プロジェクトを追加するたびに個別にDBを
   インストール・起動する必要はない。実装時は`aruaru-llm`の
   `src/tenants.rs`(`TenantRegistry`、`RwLock`によるプロセス内共有状態、
@@ -57,7 +57,7 @@ VPS上の作業パス: `/root/RRedmine`(空フォルダ作成済み、2026-07-21
   ——`aruaru-llm`が`open-easy-web/server/src/appserver_registration.rs`の
   `AppServerKind::AruaruLlm`/`register_aruaru_llm()`経由でテナント登録
   される設計と同じパターンで、`RRedmine`(および将来の`RWordPress`/
-  `REC-CUBE`)用の`AppServerKind`variantを追加し、ドメイン追加を
+  `RS-EC`)用の`AppServerKind`variantを追加し、ドメイン追加を
   `open-easy-web`の「サイト管理」画面から一元管理できるようにする。
   **非同期・マルチCPU/マルチコア/マルチスレッド対応**:
   `#[tokio::main]`は既定の`multi_thread`フレーバー(`current_thread`への
