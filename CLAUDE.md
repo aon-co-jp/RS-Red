@@ -73,3 +73,34 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     (2) Redmineの機能のうちMVP範囲の選定(チケット管理のみ、等)、
     (3) `RGit`と同じ認証・アクセス制御の再利用可否の検討、
     (4) `aruaru-db`との接続方式の設計。
+
+
+## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
+
+`RS-Chiketto`・`RS-Blog`・`RS-EC`(この3プロジェクト自身、着手順は
+「1つずつ順番に」の方針のまま)に加えて、以下の既存プロジェクトを
+**同時に開発を進め、完成度を高めていく**:
+
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — 開発ルールの
+  正本。3プロジェクトの`CLAUDE.md`もここの記述と同期を取る。
+- [aruaru-db](https://github.com/aon-co-jp/aruaru-db) — ZFS互換・ACID
+  互換のRust製DB。3プロジェクトが採用する「分身の術」DB共有構成の実体。
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — GPU抽象化・
+  GEMM/Attention計算基盤(`opencuda-blas`/`opencuda-bert`)。
+- [aruaru-llm](https://github.com/aon-co-jp/aruaru-llm) — 上記
+  `open-cuda`を使った実装例(bag-of-words→文埋め込みベースの意図分類へ
+  移行済み)。3プロジェクトが将来AI機能を持つ際の先行実装として参照。
+- [open-web-server](https://github.com/aon-co-jp/open-web-server) —
+  「分身の術」構成(1インスタンスを複数ドメインが共有)の基盤実装、
+  Nginx/Apacheハイブリッド仕様のWebサーバー。
+- [open-cosmo](https://github.com/aon-co-jp/open-cosmo) — 関連する
+  Webサーバー/フロントエンド基盤(詳細は同リポジトリのCLAUDE.md参照)。
+- [RPoem](https://github.com/aon-co-jp/RPoem) — アプリケーションサーバー
+  層(旧poem-cosmo-tauri)。`open-raid-z`とVersionlessAPIによる
+  バージョンレス運用、`aruaru-db`とのDUAL DATABASE構成の先行実装。
+
+**理由**: これらは3プロジェクトが実際に依存する基盤コンポーネント
+(DB層・GPU計算基盤・「分身の術」共有構成・アプリケーションサーバー層)
+であり、基盤側の完成を待ってから3プロジェクトに着手するのではなく、
+実際に統合しながら並行して育て、エコシステム全体の完成度を高めていく
+方針とする。
