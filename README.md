@@ -1,7 +1,10 @@
 # RS-Chiketto
 
+**開発開始日: 2026-07-21**(このリポジトリのGitHub作成日)
+
 [Redmine](https://redmine.org/)のハイスピード・ハイセキュリティ・省メモリな
-Rust+[poem](https://github.com/poem-web/poem)版。
+Rust+[poem](https://github.com/poem-web/poem)(RPoem)版。運用時はVPSレンタル
+サーバー費用を安く抑えられる予定です。
 
 > ⚠️ v0.1.0時点ではチケット(Issue)CRUDのみ。詳細は`CLAUDE.md`参照。
 
