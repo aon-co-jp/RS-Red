@@ -461,6 +461,24 @@ fn env_data_dir() -> PathBuf {
     std::env::var("RSCHIKETTO_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("./data"))
 }
 
+/// ルーティング定義を`main()`とテスト(`poem::test::TestClient`)の両方から
+/// 再利用できるように切り出したもの。
+fn build_routes(state: AppState) -> impl poem::Endpoint {
+    Route::new()
+        .at("/healthz", get(healthz))
+        .at("/api/auth/request-otp", post(request_otp))
+        .at("/api/auth/verify-otp", post(verify_otp))
+        .at("/api/auth/logout", post(logout))
+        .at("/api/accounts", get(list_accounts).post(add_account))
+        .at("/api/accounts/request", post(request_access))
+        .at("/api/accounts/requests", get(list_access_requests))
+        .at("/api/accounts/requests/:id/decide", post(decide_access_request))
+        .at("/api/tickets", get(list_tickets).post(create_ticket))
+        .at("/api/tickets/:id", get(get_ticket).put(update_ticket))
+        .data(state)
+        .with(Tracing)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -480,23 +498,159 @@ async fn main() -> anyhow::Result<()> {
     }
     let state = AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email, smtp, accounts_locked };
 
-    let app = Route::new()
-        .at("/healthz", get(healthz))
-        .at("/api/auth/request-otp", post(request_otp))
-        .at("/api/auth/verify-otp", post(verify_otp))
-        .at("/api/auth/logout", post(logout))
-        .at("/api/accounts", get(list_accounts).post(add_account))
-        .at("/api/accounts/request", post(request_access))
-        .at("/api/accounts/requests", get(list_access_requests))
-        .at("/api/accounts/requests/:id/decide", post(decide_access_request))
-        .at("/api/tickets", get(list_tickets).post(create_ticket))
-        .at("/api/tickets/:id", get(get_ticket).put(update_ticket))
-        .data(state)
-        .with(Tracing);
+    let app = build_routes(state);
 
     let port = std::env::var("RSCHIKETTO_PORT").unwrap_or_else(|_| "8100".to_string());
     let addr = format!("0.0.0.0:{port}");
     tracing::info!("listening on {addr}");
     Server::new(TcpListener::bind(addr)).run(app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod handler_tests {
+    //! `poem::test::TestClient`を使ったハンドラレベルの統合テスト
+    //! (2026-07-21追記、HANDOFF記載の宿題への対応)。
+    //! `cargo test`実行時にテストごとに独立した一時ディレクトリを
+    //! `RSCHIKETTO_DATA_DIR`として使うため、`AppState.data_root`は各テスト
+    //! ごとに直接構築する(実プロセスの環境変数には依存しない)。
+
+    use super::*;
+    use poem::test::TestClient;
+
+    const ADMIN_EMAIL: &str = "admin@example.com";
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let unique = accounts::generate_request_id();
+        std::env::temp_dir().join(format!("rschiketto-handler-test-{label}-{unique}"))
+    }
+
+    /// `accounts_locked`を指定してテスト用の`AppState`を構築する
+    /// (環境変数に依存しないテストローカル構築、SMTP未設定)。
+    async fn make_state(label: &str, accounts_locked: bool) -> AppState {
+        let data_root = temp_dir(label);
+        tokio::fs::create_dir_all(&data_root).await.unwrap();
+        AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked }
+    }
+
+    /// 管理者としてログイン済みのセッショントークンを、OTPフローを経由
+    /// せず直接`AuthStore`に発行させて得る(SMTP無し環境でもテスト可能)。
+    fn admin_token(state: &AppState) -> String {
+        state.auth.create_session(ADMIN_EMAIL)
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_list_tickets_returns_200_with_empty_array() {
+        // HANDOFFに明記された設計: 未ログインの`GET /api/tickets`は
+        // 401ではなく200・空配列(project単位のフィルタリングにより
+        // 可視チケットが0件になるため)。
+        let state = make_state("list-empty", true).await;
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let resp = client.get("/api/tickets").send().await;
+        resp.assert_status_is_ok();
+        resp.assert_text("[]").await;
+    }
+
+    #[tokio::test]
+    async fn self_service_account_request_returns_201_and_creates_pending_request() {
+        let state = make_state("self-service-request", true).await;
+        let data_root = state.data_root.clone();
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let resp = client
+            .post("/api/accounts/request")
+            .body_json(&serde_json::json!({ "email": "newcomer@example.com", "message": "please let me in" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        let store = accounts::load(&data_root).await;
+        assert_eq!(store.pending_requests.len(), 1);
+        assert_eq!(store.pending_requests[0].email, "newcomer@example.com");
+    }
+
+    #[tokio::test]
+    async fn admin_approving_a_request_grants_the_expected_access_config_entry() {
+        let state = make_state("approve-grants-access", false).await;
+        let data_root = state.data_root.clone();
+        let token = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        // まず自己申請を作成。
+        client
+            .post("/api/accounts/request")
+            .body_json(&serde_json::json!({ "email": "member@example.com" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::CREATED);
+
+        let store = accounts::load(&data_root).await;
+        let request_id = store.pending_requests[0].id.clone();
+
+        // 管理者セッションで承認、プロジェクト"demo"へview権限を付与。
+        let resp = client
+            .post(format!("/api/accounts/requests/{request_id}/decide"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({
+                "approve": true,
+                "allow_view": true,
+                "allow_edit": false,
+                "project": "demo"
+            }))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+
+        // 承認によりaccounts一覧へ追加されていること。
+        let updated_store = accounts::load(&data_root).await;
+        assert!(updated_store.emails.contains("member@example.com"));
+        assert!(updated_store.pending_requests.is_empty());
+
+        // access::AccessConfigへ期待した許可が書き込まれていること。
+        let config = access::load(&data_root, project_id("demo")).await;
+        let perm = config.accounts.get("member@example.com").expect("member should have an access grant");
+        assert!(perm.allow_view);
+        assert!(!perm.allow_edit);
+    }
+
+    #[tokio::test]
+    async fn accounts_locked_rejects_non_admin_approval_with_403() {
+        // このテストはローカル構築の`AppState`で`accounts_locked: true`を
+        // 指定するのみで、プロセス環境変数`RSCHIKETTO_ACCOUNTS_LOCKED`は
+        // 一切変更しない(他テストへの影響を避けるため)。
+        let state = make_state("locked-rejects-approval", true).await;
+        let data_root = state.data_root.clone();
+        let token = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        client
+            .post("/api/accounts/request")
+            .body_json(&serde_json::json!({ "email": "outsider@example.com" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::CREATED);
+
+        let store = accounts::load(&data_root).await;
+        let request_id = store.pending_requests[0].id.clone();
+
+        // 管理者セッションであっても、承認対象が管理者メール以外かつ
+        // accounts_locked中は403で拒否される(main.rsのdecide_access_request参照)。
+        let resp = client
+            .post(format!("/api/accounts/requests/{request_id}/decide"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({ "approve": true }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        // 拒否されても申請自体はpendingリストから取り除かれ、emailsには
+        // 追加されていないこと(main.rsの実装通り)。
+        let after = accounts::load(&data_root).await;
+        assert!(!after.emails.contains("outsider@example.com"));
+    }
 }
