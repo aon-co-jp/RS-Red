@@ -64,6 +64,19 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
   固定はしない)、CPU負荷の高い処理は`rayon`で全論理コアへ並列
   ディスパッチする(`aruaru-llm`の`opencuda_cpu::CpuDevice`と同じ方針)。
 
+## 公開先・配布方針(2026-07-21、ユーザー確認済み)
+
+- **公開パス**: `runo.tokyo/chiketto`(`RGit`の`runo.tokyo/rgit`と同じ
+  パス方式、VPS上のポートは`8100`)。
+- **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
+  RHEL等の主要Linuxディストリ、Windows・Windows Server向けに、
+  インストーラー付きのビルド済みバイナリをGitHub Releasesで配布する
+  (ユーザー指示)。`.github/workflows/release.yml`でタグpush時に
+  自動ビルド、Linux版は`x86_64-unknown-linux-musl`(静的リンク、
+  ディストリ非依存)、Windows版は`x86_64-pc-windows-msvc`。
+  `install.sh`(systemdサービス登録)・`install.ps1`(Windowsサービス
+  登録手順の案内)を同梱。詳細は`README.md`参照。
+
 ## HANDOFF
 
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
