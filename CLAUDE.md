@@ -245,6 +245,57 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     (親子関係)、(3) VPSへのデプロイ、(4) Wiki・ガントチャート等の
     追加機能、(5) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
 
+- **2026-07-22(続き) プロジェクトのサブプロジェクト階層・チケットへの
+  コメントを追加(前回HANDOFF宿題(2)、および実用最小限として優先度が
+  高いと判断したコメント機能への対応)**:
+  1. `project.rs`の`Project`に`parent_id: Option<u64>`を追加。
+     `ProjectStore::children_of`(直接の子一覧)・`would_create_cycle`
+     (自分自身や自分の子孫を親に設定しようとする循環参照を検出)を実装。
+  2. `main.rs`: `POST /api/projects`・`PUT /api/projects/:id`が
+     `parent_id`を受け付けるように変更(`PUT`側は二重`Option`
+     デシリアライズパターン——フィールド省略は変更なし、`null`は
+     親解除、値ありは親設定——を新規導入)。`GET /api/projects/:id/children`
+     を追加(認証不要、既存の一覧・詳細取得と同じ方針)。循環参照・
+     存在しない`parent_id`はいずれも`400`で拒否。
+  3. `src/comments.rs`を新設: `Comment { id, ticket_id, author_email,
+     body, created_at }`と`CommentStore`(既存パターンと同じJSON
+     ファイル永続化、`comments.json`)。`GET/POST /api/tickets/:id/comments`
+     (閲覧/編集権限をチケット所属プロジェクトの`access.rs`経由で
+     チェック、既存の`update_ticket`/`get_ticket`と同じ権限モデルを
+     再利用——モデレーションキューは投稿時点で権限確認済みのため不要)、
+     `DELETE /api/comments/:id`(管理者または投稿者本人のみ)を追加。
+  4. `README.md`・`GET /`ランディングページのエンドポイント表、および
+     このCLAUDE.mdの正直な開示リストから「サブプロジェクト階層」の
+     未実装項目を除去。
+  5. テスト追加: `project.rs`の`would_create_cycle_detects_self_and_ancestor_cycles`、
+     `comments.rs`のストレージ往復2件、ハンドラレベルで
+     `subproject_hierarchy_children_listing_and_cycle_rejection`
+     (子作成・`GET /children`・親を自分の子孫や自分自身に設定しようと
+     すると`400`)、`comment_creation_is_gated_by_project_edit_access`・
+     `comment_visibility_is_gated_by_project_view_access`
+     (未ログイン`401`、無許可アカウント`403`、許可済みアカウント成功)。
+  6. **検証**: `cargo build`(`cargo build`単体・`cargo build`の一部の
+     `cargo test`両方)警告0件。`cargo test` **28件全green**(前回22件+
+     今回6件〈project.rs 1件・comments.rs 2件・handler_tests 3件〉)。
+     実バイナリを起動(`RSCHIKETTO_DATA_DIR`一時ディレクトリ、
+     `RSCHIKETTO_ADMIN_EMAIL=admin@example.com`、SMTP未設定、
+     `RSCHIKETTO_PORT=8199`)して`curl`で実HTTP確認: `GET /healthz`→
+     `200`、`GET /api/projects/1/children`(存在しない`id`)→`404`、
+     `POST /api/projects`(未認証)→`401`、`GET /api/tickets/1/comments`
+     (存在しないチケット)→`404`、`POST /api/tickets/1/comments`
+     (存在しないチケット、未認証)→`404`(存在チェックが認証チェックより
+     先に走る設計通り)、をいずれも確認。**正直な開示**: 前回までと
+     同じ制約でSMTPが無いローカル検証環境のため、管理者OTPログインを
+     経由した「プロジェクト作成→子プロジェクト作成→チケット作成→
+     コメント投稿」というフル経路のcurl E2Eは今回も未検証——この経路は
+     上記のハンドラレベルテスト(`AuthStore::create_session`でOTPを
+     迂回してセッションを直接発行)で代替検証している。
+  - 次にすべきこと: (1) 実SMTP環境でのフルE2E(OTPログイン→プロジェクト
+    作成→サブプロジェクト作成→チケット作成→コメント投稿)、
+    (2) VPSへのデプロイ(今回も未実施)、(3) Wiki・ガントチャート等の
+    追加機能、(4) `aruaru-db`/PostgreSQL DUAL DB構成への移行、
+    (5) コメントの編集(現状は投稿・削除のみ)。
+
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
 `RS-Chiketto`・`RS-Blog`・`RS-EC`(この3プロジェクト自身、着手順は
