@@ -9,7 +9,7 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
 
 [Redmine](https://redmine.org/)(実際にはRuby on Rails製)の、
 ハイスピード・ハイセキュリティ・省メモリなRust+[poem](https://github.com/poem-web/poem)
-(RPoem)版を目指す。`RGit`(Gitea相当)・`RJSON`(JSON処理)と同じ
+(RPoem)版を目指す。`RS-Git`(Gitea相当)・`RJSON`(JSON処理)と同じ
 `aon-co-jp`エコシステムの一員。
 
 > ⚠️ **正直な開示**: 2026-07-21時点でコード未着手(このCLAUDE.mdのみの
@@ -18,7 +18,7 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
 
 ## 着手時に踏襲すべき既存プロジェクトの設計方針
 
-- **`RGit`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
+- **`RS-Git`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
   自動判定)を先行実装として参照。特に「正直な開示」「段階的実装」
   「型チェックだけで完了と報告しない・実機検証必須」の3方針は共通。
 - **`RJSON`**(依存を絞った設計、`light`/`full`のfeature分離)も
@@ -36,7 +36,7 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
 ## 方針決定事項(2026-07-21、ユーザー確認済み)
 
 - **着手順番**: `RS-Chiketto`・`RS-Blog`・`RS-EC`は同時並行ではなく
-  **1つずつ順番に、`RGit`と同じ深さまで作り込んでから次へ**進める。
+  **1つずつ順番に、`RS-Git`と同じ深さまで作り込んでから次へ**進める。
   どれを最初にするかは次回セッション冒頭で決定。
 - **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB、
   `open-raid-z`エコシステム)を採用し、3プロジェクトで統一する。
@@ -66,7 +66,7 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
 
 ## 公開先・配布方針(2026-07-21、ユーザー確認済み)
 
-- **公開パス**: `runo.tokyo/chiketto`(`RGit`の`runo.tokyo/rgit`と同じ
+- **公開パス**: `runo.tokyo/chiketto`(`RS-Git`の`runo.tokyo/rgit`と同じ
   パス方式、VPS上のポートは`8100`)。
 - **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
   RHEL等の主要Linuxディストリ、Windows・Windows Server向けに、
@@ -80,40 +80,40 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
 ## HANDOFF
 
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
-  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RGit`と同じ構成
+  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
   (`Cargo.toml`+`poem`)でのブートストラップに着手する。
   - 次にすべきこと: (1) 3プロジェクトのうちどれから着手するか決定、
     (2) Redmineの機能のうちMVP範囲の選定(チケット管理のみ、等)、
-    (3) `RGit`と同じ認証・アクセス制御の再利用可否の検討、
+    (3) `RS-Git`と同じ認証・アクセス制御の再利用可否の検討、
     (4) `aruaru-db`との接続方式の設計。
 
 - **2026-07-21(続き) v0.1.0ブートストラップ完了: チケットCRUD+OTP認証**
-  (ユーザー指示「RS-Chikettoから着手」、`RGit`と`RS-Chiketto`のブート
+  (ユーザー指示「RS-Chikettoから着手」、`RS-Git`と`RS-Chiketto`のブート
   ストラップを並行して進めた1つ):
-  1. `RGit`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTPログイン機構、
+  1. `RS-Git`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTPログイン機構、
      環境変数名のみ`RSCHIKETTO_*`に変更)。v0.1.0時点では管理者アカウント
-     のみログイン可能(`RGit`にある登録アカウント制・アクセス制御の
+     のみログイン可能(`RS-Git`にある登録アカウント制・アクセス制御の
      細分化はまだ移植していない、次回以降の増分)。
   2. チケット(Issue)のCRUD: `POST/GET /api/tickets`・
      `GET/PUT /api/tickets/:id`。ステータスは`open`/`in_progress`/
      `closed`の3値。永続化はJSONファイル(`aruaru-db`/PostgreSQL DUAL DB
      構成への移行はまだ未着手——今回は動くMVPを優先)。
   3. **検証**: `cargo build`警告0件、`cargo test` 6件全green
-     (auth関連、`RGit`からそのまま移植したテスト)。実バイナリで
+     (auth関連、`RS-Git`からそのまま移植したテスト)。実バイナリで
      E2E確認: 未ログインでの`GET /api/tickets`→`401`、実SMTP経由の
      OTPログイン→チケット作成(`201`)→一覧取得→ステータス更新
      (`open`→`closed`)まで実HTTPで一連の動作を確認済み。
   - 次にすべきこと: (1) プロジェクト・サブプロジェクト階層の追加、
-    (2) `RGit`にある登録アカウント制・アクセス制御(閲覧/編集の個別
+    (2) `RS-Git`にある登録アカウント制・アクセス制御(閲覧/編集の個別
     許可)の移植、(3) Wiki・ガントチャート等の追加機能、(4) `aruaru-db`/
     PostgreSQL DUAL DB構成への移行(現状はJSONファイル永続化)、
     (5) GitHubへの初回push・VPSデプロイ。
 
 - **2026-07-21(続き) 登録アカウント制・アクセス制御を`main.rs`へ配線
-  (`RGit`の設計をそのまま踏襲、上記(2)の着手分、コミット`53d4cb8`)**:
+  (`RS-Git`の設計をそのまま踏襲、上記(2)の着手分、コミット`53d4cb8`)**:
   1. `mod access; mod accounts;`を追加、`AppState`に
      `accounts_locked`(`RSCHIKETTO_ACCOUNTS_LOCKED`、既定`true`——
-     `RGit`の`RGIT_ACCOUNTS_LOCKED`と同じ方針)を追加。
+     `RS-Git`の`RGIT_ACCOUNTS_LOCKED`と同じ方針)を追加。
   2. `Ticket`に`project: String`(単純な文字列ラベル)を追加し、
      `access::is_allowed`経由で閲覧(`GET /api/tickets`は所属
      プロジェクトごとにフィルタ、`GET /api/tickets/:id`は403/401)・
@@ -123,17 +123,17 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
      ハッシュ衝突は理論上ゼロではないが実用上無視できる程度という
      判断——将来Project CRUDを追加する際は連番IDに置き換える)。
   3. `request_otp`を`accounts::AccountStore`の登録メールにも対応
-     (管理者 OR 登録済みアカウント、`RGit`と同じ判定)。
+     (管理者 OR 登録済みアカウント、`RS-Git`と同じ判定)。
   4. `POST/GET /api/accounts`・`POST /api/accounts/request`
      (認証不要)・`GET /api/accounts/requests`・
-     `POST /api/accounts/requests/:id/decide`を`RGit`と同じ形状で追加。
+     `POST /api/accounts/requests/:id/decide`を`RS-Git`と同じ形状で追加。
      `decide`は承認時に`project`が指定されていればそのプロジェクトの
      `access::AccessConfig::accounts`へ閲覧/編集許可を書き込む。
      `accounts_locked`中は管理者メール以外の登録・承認申請の承認を
      `403`で拒否。
   5. `mail.rs`に`send_access_request_notice`/`send_access_decision`を
      追加(申請受付時に管理者へ、審査結果を申請者へSMTP通知、
-     `RGit`と同じ)。
+     `RS-Git`と同じ)。
   6. **検証**: `cargo build`警告0件。`cargo test` **12件全green**
      (既存9件+`accounts`モジュール新規2件〈JSON永続化の往復・
      ファイル未存在時のデフォルト読み込み〉+既存の重複を除く)。
