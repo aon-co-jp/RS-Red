@@ -13,6 +13,9 @@ pub struct Project {
     pub id: u64,
     pub name: String,
     pub description: String,
+    /// 親プロジェクトの`id`(サブプロジェクト階層、`None`ならトップレベル)。
+    #[serde(default)]
+    pub parent_id: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -30,6 +33,34 @@ impl ProjectStore {
 
     pub fn exists(&self, id: u64) -> bool {
         self.find(id).is_some()
+    }
+
+    pub fn children_of(&self, id: u64) -> Vec<&Project> {
+        self.projects.iter().filter(|p| p.parent_id == Some(id)).collect()
+    }
+
+    /// `candidate_parent`を`id`の親として設定した場合に循環参照が生じないかを
+    /// 判定する(`id`が`candidate_parent`の祖先チェーンに含まれていないか、
+    /// 親チェーンを辿って確認する)。`candidate_parent == id`(自分自身を親にする)
+    /// も循環として拒否する。
+    pub fn would_create_cycle(&self, id: u64, candidate_parent: u64) -> bool {
+        if candidate_parent == id {
+            return true;
+        }
+        let mut current = Some(candidate_parent);
+        let mut guard = 0usize;
+        while let Some(cur) = current {
+            if cur == id {
+                return true;
+            }
+            guard += 1;
+            if guard > self.projects.len() + 1 {
+                // 既存データが壊れて循環している場合の無限ループ防止。
+                return true;
+            }
+            current = self.find(cur).and_then(|p| p.parent_id);
+        }
+        false
     }
 }
 
@@ -73,6 +104,7 @@ mod tests {
             id,
             name: "demo".to_string(),
             description: "a demo project".to_string(),
+            parent_id: None,
             created_at: now_rfc3339(),
             updated_at: now_rfc3339(),
         });
@@ -85,6 +117,31 @@ mod tests {
         assert!(!loaded.exists(id + 1));
 
         tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[test]
+    fn would_create_cycle_detects_self_and_ancestor_cycles() {
+        let mut store = ProjectStore::default();
+        let mk = |id: u64, parent_id: Option<u64>| Project {
+            id,
+            name: format!("p{id}"),
+            description: String::new(),
+            parent_id,
+            created_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        };
+        // 0 -> 1 -> 2 (0がroot)
+        store.projects.push(mk(0, None));
+        store.projects.push(mk(1, Some(0)));
+        store.projects.push(mk(2, Some(1)));
+
+        // 自分自身を親にするのは循環。
+        assert!(store.would_create_cycle(1, 1));
+        // 0の親を2にすると、2の祖先チェーンに0が含まれるため循環。
+        assert!(store.would_create_cycle(0, 2));
+        // 無関係なノードを親にするのは問題ない。
+        store.projects.push(mk(3, None));
+        assert!(!store.would_create_cycle(3, 0));
     }
 
     #[tokio::test]
