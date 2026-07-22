@@ -190,6 +190,61 @@ VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07
     DUAL DB構成への移行。
 
 
+- **2026-07-22 Project自体のCRUDを追加(HANDOFF記載の宿題(3)への対応)**:
+  1. `src/project.rs`を新設: `Project { id: u64, name: String,
+     description: String, created_at: String, updated_at: String }`と
+     `ProjectStore`(既存の`TicketStore`/`accounts::AccountStore`と同じ
+     JSONファイル永続化パターン、`projects.json`)。
+  2. `main.rs`に`POST/GET /api/projects`・`GET/PUT/DELETE /api/projects/:id`
+     を追加。作成・更新・削除は`require_admin_session`で管理者のみに
+     制限(`access.rs`の「構造を作れるのは管理者のみ」という既存方針を
+     踏襲)、一覧・詳細取得は認証不要(プロジェクトの存在自体は隠す
+     情報ではなく、チケットの中身は`access.rs`のアクセス制御で個別に
+     守られる、という判断)。
+  3. `Ticket.project: String`(文字列ラベル)を`Ticket.project_id: u64`
+     (実在する`Project`への参照)に置き換え。`create_ticket`で
+     `project::ProjectStore::exists`により実在確認し、存在しない
+     `project_id`の場合は`400`で明確に拒否するようにした。
+  4. `check_project_access`・`access.rs`連携から`project_id()`関数
+     (`DefaultHasher`によるハッシュ経由の変換)を削除し、実在する
+     `Project.id`(連番`u64`)を直接`access::load`/`access::save`へ渡す
+     ように変更(HANDOFFに記載の「将来Project CRUDを追加する際は
+     連番IDに置き換える」を実施)。`decide_access_request`の
+     `DecideAccessRequestPayload.project: Option<String>`も
+     `project_id: Option<u64>`に変更。
+  5. テスト追加: `project.rs`のストレージ往復テスト2件、
+     ハンドラレベルで`project_crud_via_http`(管理者のみ作成・更新・
+     削除できること、一覧・詳細は認証不要であること)、
+     `create_ticket_against_nonexistent_project_fails_cleanly`
+     (存在しない`project_id`でのチケット作成が`400`になること)、
+     `access_control_gates_ticket_creation_by_real_project_id`
+     (実在の連番`project_id`に対して`access::AccessConfig`が正しく
+     効くこと、未ログイン`401`・無許可アカウント`403`・許可済み
+     アカウント`201`の3パターン)。
+  6. `README.md`にAPIエンドポイント一覧表を新設(従来README側には
+     エンドポイント一覧が無かったため今回新設、`GET /`ランディング
+     ページの表と同内容に揃えた)。
+  7. **検証**: `cargo build`警告0件。`cargo test` **22件全green**
+     (前回HANDOFF時点の16件+今回の6件〈project.rs 2件・
+     handler_tests 4件〉、なお前回16件から今回着手時点で
+     `handler_tests`の既存テストが1件`project`関連の変更で調整済み
+     ―新規追加分は正味6件)。実バイナリでのcurlスモークテスト
+     (`RSCHIKETTO_DATA_DIR`一時ディレクトリ、SMTP未設定): `GET /api/projects`
+     (未認証)→`200`・空配列、`POST /api/projects`(未認証)→`401`、
+     `POST /api/tickets`(存在しない`project_id=999999`)→`400`
+     (期待通りのエラーメッセージ)、`GET /api/tickets`(未認証)→`200`・
+     空配列、を確認。**正直な開示**: SMTPが無いローカル検証環境のため、
+     管理者OTPログインを経由した「プロジェクト作成→そのproject_idで
+     チケット作成→アクセス制御が効く」というフル経路のcurl E2Eは
+     今回も未検証(前回HANDOFFと同じ制約)——この経路は
+     `access_control_gates_ticket_creation_by_real_project_id`の
+     ハンドラレベルテスト(`AuthStore::create_session`でOTPを迂回して
+     セッションを直接発行、既存テストと同じ手法)で代替検証している。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→プロジェクト作成→
+    チケット作成のフルE2E、(2) プロジェクトのサブプロジェクト階層
+    (親子関係)、(3) VPSへのデプロイ、(4) Wiki・ガントチャート等の
+    追加機能、(5) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
+
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
 `RS-Chiketto`・`RS-Blog`・`RS-EC`(この3プロジェクト自身、着手順は

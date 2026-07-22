@@ -1,0 +1,97 @@
+//! プロジェクト(`Project`)のCRUD。v0.1.0時点ではチケットの`project`
+//! フィールドが単純な文字列ラベル+`DefaultHasher`によるハッシュ値
+//! だった(`access.rs`参照)ものを、実体を持つエンティティに置き換える
+//! (`CLAUDE.md`のHANDOFFに記載の宿題「(3) Project自体のCRUD」への対応)。
+//! 永続化は既存の`accounts.rs`/`main.rs`のTicketStoreと同じJSONファイル
+//! パターンを踏襲。
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ProjectStore {
+    pub next_id: u64,
+    pub projects: Vec<Project>,
+}
+
+impl ProjectStore {
+    pub fn find(&self, id: u64) -> Option<&Project> {
+        self.projects.iter().find(|p| p.id == id)
+    }
+
+    pub fn exists(&self, id: u64) -> bool {
+        self.find(id).is_some()
+    }
+}
+
+fn projects_path(data_root: &Path) -> PathBuf {
+    data_root.join("projects.json")
+}
+
+pub async fn load(data_root: &Path) -> ProjectStore {
+    match tokio::fs::read(projects_path(data_root)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => ProjectStore::default(),
+    }
+}
+
+pub async fn save(data_root: &Path, store: &ProjectStore) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(store).expect("ProjectStore serialization is infallible");
+    tokio::fs::write(projects_path(data_root), bytes).await
+}
+
+pub fn now_rfc3339() -> String {
+    // 依存を増やさないため、`chrono`等は使わず簡易なUNIX秒表記のISO風
+    // 文字列にとどめる(既存コードに時刻フォーマットの前例が無いため、
+    // 最小実装として採用——将来より厳密な形式が必要になれば置き換える)。
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("unix:{secs}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn save_and_load_round_trips() {
+        let dir = std::env::temp_dir().join(format!("rschiketto-project-test-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let mut store = ProjectStore::default();
+        let id = store.next_id;
+        store.next_id += 1;
+        store.projects.push(Project {
+            id,
+            name: "demo".to_string(),
+            description: "a demo project".to_string(),
+            created_at: now_rfc3339(),
+            updated_at: now_rfc3339(),
+        });
+        save(&dir, &store).await.unwrap();
+
+        let loaded = load(&dir).await;
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].name, "demo");
+        assert!(loaded.exists(id));
+        assert!(!loaded.exists(id + 1));
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn load_missing_file_returns_default() {
+        let dir = std::env::temp_dir().join(format!("rschiketto-project-missing-{}", std::process::id()));
+        let store = load(&dir).await;
+        assert_eq!(store.projects.len(), 0);
+        assert_eq!(store.next_id, 0);
+    }
+}

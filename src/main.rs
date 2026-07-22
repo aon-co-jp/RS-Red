@@ -5,10 +5,10 @@
 //!
 //! ## 正直な開示(最重要、`RGit`/`aruaru-llm`と同じ流儀)
 //!
-//! **v0.1.0時点では、チケット(Issue)のCRUDのみ実装している。**
+//! **v0.1.0時点では、チケット(Issue)・プロジェクトのCRUDのみ実装している。**
 //! Redmineが持つ以下の機能は**まだ一切無い**:
 //!
-//! - プロジェクト・サブプロジェクト階層
+//! - プロジェクトのサブプロジェクト階層(親子関係)
 //! - ガントチャート・カレンダー
 //! - Wiki・フォーラム
 //! - リポジトリ連携(SCM閲覧、[`RGit`](https://github.com/aon-co-jp/RGit)との連携は将来検討)
@@ -23,6 +23,7 @@ mod access;
 mod accounts;
 mod auth;
 mod mail;
+mod project;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,14 +71,14 @@ fn session_email(req: &Request, state: &AppState) -> Option<String> {
 /// 判定する(`access.rs`の`is_allowed`を利用)。管理者は常に許可。
 /// 未ログインは`401`、ログイン済みだが権限不足は`403`
 /// (`RGit`と同じ401/403の使い分け)。
-async fn check_project_access(req: &Request, state: &AppState, project: &str, need: access::Need) -> PoemResult<()> {
+async fn check_project_access(req: &Request, state: &AppState, project_id: u64, need: access::Need) -> PoemResult<()> {
     let email = session_email(req, state);
     if let Some(email) = &email {
         if *email == state.admin_email {
             return Ok(());
         }
     }
-    let config = access::load(&state.data_root, project_id(project)).await;
+    let config = access::load(&state.data_root, project_id).await;
     if access::is_allowed(&config, need, email.as_deref()) {
         return Ok(());
     }
@@ -88,14 +89,106 @@ async fn check_project_access(req: &Request, state: &AppState, project: &str, ne
     }
 }
 
-/// プロジェクト名(文字列)から`access.rs`が使う`project_id`(u64)を
-/// 導出する(v0.1.0時点ではプロジェクトはCRUDを持たない単純な文字列
-/// ラベルのため、アクセス設定ファイル名の一意性はハッシュ値に委ねる)。
-fn project_id(project: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    project.hash(&mut hasher);
-    hasher.finish()
+#[derive(Deserialize)]
+struct CreateProjectRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+/// `POST /api/projects` — プロジェクトを新規作成する(管理者のみ、
+/// `RGit`/`access.rs`と同じ「管理者のみが構造を作れる」方針)。
+#[handler]
+async fn create_project(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateProjectRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if body.name.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("name must not be empty"));
+    }
+    let mut store = project::load(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let now = project::now_rfc3339();
+    let proj = project::Project { id, name: body.name.clone(), description: body.description.clone(), created_at: now.clone(), updated_at: now };
+    store.projects.push(proj.clone());
+    project::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&proj).unwrap_or_default()))
+}
+
+/// `GET /api/projects` — プロジェクト一覧(全ユーザーに公開、
+/// プロジェクト自体の存在は隠す情報ではないという方針。チケットの
+/// 中身は`access.rs`のアクセス制御で個別に守られる)。
+#[handler]
+async fn list_projects(state: Data<&AppState>) -> PoemResult<Response> {
+    let store = project::load(&state.data_root).await;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&store.projects).unwrap_or_default()))
+}
+
+/// `GET /api/projects/:id` — プロジェクト詳細。
+#[handler]
+async fn get_project(PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let store = project::load(&state.data_root).await;
+    match store.find(id) {
+        Some(proj) => Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(proj).unwrap_or_default())),
+        None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found")),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateProjectRequest {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// `PUT /api/projects/:id` — プロジェクトの名前・説明を更新する(管理者のみ)。
+#[handler]
+async fn update_project(
+    req: &Request,
+    PathExtractor(id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<UpdateProjectRequest>,
+) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = project::load(&state.data_root).await;
+    let Some(proj) = store.projects.iter_mut().find(|p| p.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
+    };
+    if let Some(name) = &body.name {
+        proj.name = name.clone();
+    }
+    if let Some(description) = &body.description {
+        proj.description = description.clone();
+    }
+    proj.updated_at = project::now_rfc3339();
+    let updated = proj.clone();
+    project::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
+}
+
+/// `DELETE /api/projects/:id` — プロジェクトを削除する(管理者のみ)。
+/// このプロジェクトを参照しているチケットが残っていても削除自体は
+/// 妨げない(参照側`ticket.project_id`が指す先が無くなるだけで、
+/// チケット一覧・詳細は引き続き既存の`project_id`のまま返る——将来的に
+/// 「カスケード削除」や「参照防止」を検討する余地がある正直な開示)。
+#[handler]
+async fn delete_project(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = project::load(&state.data_root).await;
+    let before = store.projects.len();
+    store.projects.retain(|p| p.id != id);
+    if store.projects.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
+    }
+    project::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,13 +205,10 @@ struct Ticket {
     title: String,
     description: String,
     status: TicketStatus,
-    /// チケットが所属するプロジェクト名(単純な文字列ラベル、v0.1.0
-    /// 時点ではProject自体のCRUDは無い——`access.rs`のアクセス制御に
-    /// 何かグループ単位を与えるための最小実装、CLAUDE.md参照)。
-    /// 空文字列は「未分類」を表し、`RSCHIKETTO_ADMIN_EMAIL`以外は
-    /// private既定によりデフォルトで閲覧不可。
-    #[serde(default)]
-    project: String,
+    /// チケットが所属する`Project`の`id`(実体を持つ`project.rs`の
+    /// `Project`エンティティを参照、旧`project: String`+ハッシュの
+    /// 置き換え——CLAUDE.md HANDOFF「(3) Project自体のCRUD」対応)。
+    project_id: u64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -147,17 +237,20 @@ async fn save_tickets(data_root: &std::path::Path, store: &TicketStore) -> std::
 struct CreateTicketRequest {
     title: String,
     description: String,
-    /// 所属プロジェクト(空文字列可、既定は「未分類」——`access.rs`の
-    /// `Mode::Private`既定により管理者以外は不可視)。
-    #[serde(default)]
-    project: String,
+    /// 所属`Project`の`id`(実在確認は`create_ticket`内で行う)。
+    project_id: u64,
 }
 
-/// `POST /api/tickets` — チケットを新規作成する。所属`project`への
+/// `POST /api/tickets` — チケットを新規作成する。所属`project_id`への
 /// `Need::Edit`権限が必要(管理者は常に許可、`access.rs`参照)。
+/// `project_id`が実在しない場合は`400`で拒否する。
 #[handler]
 async fn create_ticket(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateTicketRequest>) -> PoemResult<Response> {
-    check_project_access(req, &state, &body.project, access::Need::Edit).await?;
+    let projects = project::load(&state.data_root).await;
+    if !projects.exists(body.project_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("project_id does not refer to an existing project"));
+    }
+    check_project_access(req, &state, body.project_id, access::Need::Edit).await?;
     if body.title.trim().is_empty() {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("title must not be empty"));
     }
@@ -165,7 +258,7 @@ async fn create_ticket(req: &Request, state: Data<&AppState>, body: poem::web::J
     let id = store.next_id;
     store.next_id += 1;
     let ticket =
-        Ticket { id, title: body.title.clone(), description: body.description.clone(), status: TicketStatus::Open, project: body.project.clone() };
+        Ticket { id, title: body.title.clone(), description: body.description.clone(), status: TicketStatus::Open, project_id: body.project_id };
     store.tickets.push(ticket.clone());
     save_tickets(&state.data_root, &store)
         .await
@@ -190,7 +283,7 @@ async fn list_tickets(req: &Request, state: Data<&AppState>) -> PoemResult<Respo
             visible.push(ticket.clone());
             continue;
         }
-        let config = access::load(&state.data_root, project_id(&ticket.project)).await;
+        let config = access::load(&state.data_root, ticket.project_id).await;
         if access::is_allowed(&config, access::Need::View, email.as_deref()) {
             visible.push(ticket.clone());
         }
@@ -203,7 +296,7 @@ async fn get_ticket(req: &Request, PathExtractor(id): PathExtractor<u64>, state:
     let store = load_tickets(&state.data_root).await;
     match store.tickets.iter().find(|t| t.id == id) {
         Some(ticket) => {
-            check_project_access(req, &state, &ticket.project, access::Need::View).await?;
+            check_project_access(req, &state, ticket.project_id, access::Need::View).await?;
             Ok(Response::builder()
                 .status(poem::http::StatusCode::OK)
                 .content_type("application/json")
@@ -233,7 +326,7 @@ async fn update_ticket(
     let Some(existing) = store_preview.tickets.iter().find(|t| t.id == id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("ticket not found"));
     };
-    check_project_access(req, &state, &existing.project, access::Need::Edit).await?;
+    check_project_access(req, &state, existing.project_id, access::Need::Edit).await?;
     let mut store = store_preview;
     let Some(ticket) = store.tickets.iter_mut().find(|t| t.id == id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("ticket not found"));
@@ -302,14 +395,16 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>POST /api/accounts/request</code></td><td>アカウント利用の自己申請(認証不要)</td></tr>
 <tr><td><code>GET /api/accounts/requests</code></td><td>保留中の自己申請一覧(管理者のみ)</td></tr>
 <tr><td><code>POST /api/accounts/requests/:id/decide</code></td><td>自己申請の承認/却下・プロジェクトへの閲覧/編集権限付与(管理者のみ)</td></tr>
-<tr><td><code>GET /api/tickets</code> / <code>POST /api/tickets</code></td><td>チケット一覧取得(アクセス権のあるプロジェクトのみ) / 新規作成</td></tr>
+<tr><td><code>GET /api/projects</code> / <code>POST /api/projects</code></td><td>プロジェクト一覧取得 / 新規作成(管理者のみ)</td></tr>
+<tr><td><code>GET /api/projects/:id</code> / <code>PUT /api/projects/:id</code> / <code>DELETE /api/projects/:id</code></td><td>プロジェクト詳細取得 / 更新・削除(管理者のみ)</td></tr>
+<tr><td><code>GET /api/tickets</code> / <code>POST /api/tickets</code></td><td>チケット一覧取得(アクセス権のあるプロジェクトのみ) / 新規作成(実在する<code>project_id</code>が必要)</td></tr>
 <tr><td><code>GET /api/tickets/:id</code> / <code>PUT /api/tickets/:id</code></td><td>チケット詳細取得 / 更新(ステータス変更含む)</td></tr>
 </table>
 
 <div class="warn">
 <strong>正直な開示: まだ実装していない機能</strong>
 <ul>
-<li>プロジェクト・サブプロジェクト階層(現状はチケットに文字列ラベルを付与するのみ)</li>
+<li>プロジェクトのサブプロジェクト階層(親子関係、Project自体のCRUDは実装済み)</li>
 <li>ガントチャート・カレンダー</li>
 <li>Wiki・フォーラム</li>
 <li>リポジトリ連携(SCM閲覧、<a href="https://github.com/aon-co-jp/RGit">RGit</a>との連携は将来検討)</li>
@@ -481,11 +576,11 @@ struct DecideAccessRequestPayload {
     #[serde(default)]
     allow_edit: bool,
     #[serde(default)]
-    project: Option<String>,
+    project_id: Option<u64>,
 }
 
 /// `POST /api/accounts/requests/:id/decide` — 申請を審査する(管理者のみ)。
-/// 承認時、`project`が指定されていればそのプロジェクトの
+/// 承認時、`project_id`が指定されていればそのプロジェクトの
 /// `access::AccessConfig::accounts`に閲覧/編集許可を書き込む
 /// (プロジェクト指定が無い申請はアカウント登録のみ行う)。
 /// `accounts_locked`中は管理者メール以外の承認を拒否する
@@ -521,10 +616,10 @@ async fn decide_access_request(
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
 
     if body.approve {
-        if let Some(project) = &body.project {
-            let mut config = access::load(&state.data_root, project_id(project)).await;
+        if let Some(pid) = body.project_id {
+            let mut config = access::load(&state.data_root, pid).await;
             config.accounts.insert(request.email.clone(), access::AccountPermission { allow_view: body.allow_view, allow_edit: body.allow_edit });
-            access::save(&state.data_root, project_id(project), &config)
+            access::save(&state.data_root, pid, &config)
                 .await
                 .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
         }
@@ -555,6 +650,8 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
         .at("/api/accounts/request", post(request_access))
         .at("/api/accounts/requests", get(list_access_requests))
         .at("/api/accounts/requests/:id/decide", post(decide_access_request))
+        .at("/api/projects", get(list_projects).post(create_project))
+        .at("/api/projects/:id", get(get_project).put(update_project).delete(delete_project))
         .at("/api/tickets", get(list_tickets).post(create_ticket))
         .at("/api/tickets/:id", get(get_ticket).put(update_ticket))
         .data(state)
@@ -689,7 +786,7 @@ mod handler_tests {
         let store = accounts::load(&data_root).await;
         let request_id = store.pending_requests[0].id.clone();
 
-        // 管理者セッションで承認、プロジェクト"demo"へview権限を付与。
+        // 管理者セッションで承認、project_id=42へview権限を付与。
         let resp = client
             .post(format!("/api/accounts/requests/{request_id}/decide"))
             .header("Authorization", format!("Bearer {token}"))
@@ -697,7 +794,7 @@ mod handler_tests {
                 "approve": true,
                 "allow_view": true,
                 "allow_edit": false,
-                "project": "demo"
+                "project_id": 42
             }))
             .send()
             .await;
@@ -709,7 +806,7 @@ mod handler_tests {
         assert!(updated_store.pending_requests.is_empty());
 
         // access::AccessConfigへ期待した許可が書き込まれていること。
-        let config = access::load(&data_root, project_id("demo")).await;
+        let config = access::load(&data_root, 42).await;
         let perm = config.accounts.get("member@example.com").expect("member should have an access grant");
         assert!(perm.allow_view);
         assert!(!perm.allow_edit);
@@ -750,5 +847,161 @@ mod handler_tests {
         // 追加されていないこと(main.rsの実装通り)。
         let after = accounts::load(&data_root).await;
         assert!(!after.emails.contains("outsider@example.com"));
+    }
+
+    /// Project CRUD(HANDOFF「(3) Project自体のCRUD」対応の検証):
+    /// 管理者が作成し、誰でも一覧・詳細取得でき、管理者のみ更新・削除
+    /// できることを確認する。
+    #[tokio::test]
+    async fn project_crud_via_http() {
+        let state = make_state("project-crud", true).await;
+        let token = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        // 非管理者(未ログイン)は作成できない。
+        client
+            .post("/api/projects")
+            .body_json(&serde_json::json!({ "name": "no-auth", "description": "" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // 管理者は作成できる。
+        let resp = client
+            .post("/api/projects")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({ "name": "demo", "description": "a demo project" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let body: serde_json::Value = resp.json().await.value().deserialize();
+        let id = body["id"].as_u64().expect("created project should have an id");
+        assert_eq!(body["name"], "demo");
+
+        // 一覧取得(認証不要)。
+        let list = client.get("/api/projects").send().await;
+        list.assert_status_is_ok();
+        let list_body: serde_json::Value = list.json().await.value().deserialize();
+        assert_eq!(list_body.as_array().unwrap().len(), 1);
+
+        // 詳細取得(認証不要)。
+        client.get(format!("/api/projects/{id}")).send().await.assert_status_is_ok();
+
+        // 非管理者は更新できない。
+        client
+            .put(format!("/api/projects/{id}"))
+            .body_json(&serde_json::json!({ "name": "renamed" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // 管理者は更新できる。
+        let updated = client
+            .put(format!("/api/projects/{id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({ "name": "renamed" }))
+            .send()
+            .await;
+        updated.assert_status_is_ok();
+        let updated_body: serde_json::Value = updated.json().await.value().deserialize();
+        assert_eq!(updated_body["name"], "renamed");
+
+        // 存在しないIDへの操作は404。
+        client.get("/api/projects/999999").send().await.assert_status(poem::http::StatusCode::NOT_FOUND);
+
+        // 管理者は削除できる。
+        client
+            .delete(format!("/api/projects/{id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .assert_status_is_ok();
+        client.get(format!("/api/projects/{id}")).send().await.assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
+
+    /// チケット作成時に`project_id`が実在しないプロジェクトを指す場合、
+    /// `400`で明確に拒否されることを確認する(HANDOFFタスク要件)。
+    #[tokio::test]
+    async fn create_ticket_against_nonexistent_project_fails_cleanly() {
+        let state = make_state("ticket-nonexistent-project", true).await;
+        let token = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let resp = client
+            .post("/api/tickets")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({ "title": "t", "description": "d", "project_id": 424242 }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// アクセス制御が実在の`project_id`(ハッシュ経由ではなく連番ID)で
+    /// 正しく効くことを確認する: private既定のプロジェクトへ、権限の
+    /// 無いアカウントがチケット作成しようとすると403、権限が付与された
+    /// アカウントは成功する。
+    #[tokio::test]
+    async fn access_control_gates_ticket_creation_by_real_project_id() {
+        let state = make_state("access-control-real-project-id", true).await;
+        let data_root = state.data_root.clone();
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        // 管理者がプロジェクトを作成。
+        let created = client
+            .post("/api/projects")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "private-proj", "description": "" }))
+            .send()
+            .await;
+        created.assert_status(poem::http::StatusCode::CREATED);
+        let created_body: serde_json::Value = created.json().await.value().deserialize();
+        let project_id = created_body["id"].as_u64().unwrap();
+
+        // 未ログインでの作成は401(private既定・admin以外拒否)。
+        client
+            .post("/api/tickets")
+            .body_json(&serde_json::json!({ "title": "t", "description": "d", "project_id": project_id }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // access::AccessConfigへ直接member@example.comへのedit許可を書き込み、
+        // 実際にAuthStoreでセッションを発行してから許可されることを確認する。
+        let mut config = access::load(&data_root, project_id).await;
+        config.accounts.insert("member@example.com".to_string(), access::AccountPermission { allow_view: true, allow_edit: true });
+        access::save(&data_root, project_id, &config).await.unwrap();
+
+        // 新しいAppStateを同じdata_rootで作り直し(auth::AuthStoreは
+        // プロセスごとに新規になるため、このAppStateに対応する
+        // TestClientでセッションを発行して検証する)。
+        let state2 = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let member_session = state2.auth.create_session("member@example.com");
+        let app2 = build_routes(state2);
+        let client2 = TestClient::new(app2);
+
+        let resp = client2
+            .post("/api/tickets")
+            .header("Authorization", format!("Bearer {member_session}"))
+            .body_json(&serde_json::json!({ "title": "t", "description": "d", "project_id": project_id }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        // 別の(許可されていない)一般ユーザーは403。
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_session = stranger_state.auth.create_session("stranger@example.com");
+        let stranger_app = build_routes(stranger_state);
+        let stranger_client = TestClient::new(stranger_app);
+        stranger_client
+            .post("/api/tickets")
+            .header("Authorization", format!("Bearer {stranger_session}"))
+            .body_json(&serde_json::json!({ "title": "t", "description": "d", "project_id": project_id }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::FORBIDDEN);
     }
 }
