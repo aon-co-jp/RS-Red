@@ -1,4 +1,6 @@
-# RS-Chiketto
+# RS-Red
+
+(旧名`RS-Chiketto`、2026-07-22に`RS-Red`へ改名。公開先: `https://runo.tokyo/RS-Red`)
 
 **開発開始日: 2026-07-21**(このリポジトリのGitHub作成日)
 

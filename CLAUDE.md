@@ -1,9 +1,11 @@
-# 開発方針＆開発環境ルール(RS-Chiketto)
+# 開発方針＆開発環境ルール(RS-Red)
 
 作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
 `CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
-GitHubリポジトリ: [aon-co-jp/RS-Chiketto](https://github.com/aon-co-jp/RS-Chiketto)。
-VPS上の作業パス: `/root/RS-Chiketto`(空フォルダ作成済み、2026-07-21)。
+GitHubリポジトリ: [aon-co-jp/RS-Red](https://github.com/aon-co-jp/RS-Red)
+(旧名`RS-Chiketto`、2026-07-22に`RS-Red`へ改名)。
+VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`から移動)。
+公開先: `https://runo.tokyo/RS-Red`(旧`/chiketto`は301リダイレクト)。
 
 ## このプロジェクトの役割
 
