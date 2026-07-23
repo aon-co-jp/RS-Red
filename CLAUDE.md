@@ -81,6 +81,50 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23(続き) ブラウザGUI(`web/`、Rust→WebAssembly)を新設
+  ——ユーザー指示「チケット管理を行なうWEBアプリですからGUIは基本の
+  はずです。充実させて下さい」への対応**:
+  1. 新規crate`web/`(`rs-red-web`、`crate-type = ["cdylib", "rlib"]`、
+     `wasm-bindgen`/`web-sys`のみ依存、Tauri/Node.js/TypeScript不使用
+     ——このエコシステム共通方針を踏襲)。OTPログイン、プロジェクト
+     一覧・作成、チケット一覧・作成・詳細・ステータス変更・コメント
+     投稿、Wiki一覧・作成・閲覧に対応した単一ページアプリ。
+  2. `main.rs`の`GET /`ハンドラを拡張し、`web/index.html`が存在すれば
+     優先配信、無ければ旧来の`INDEX_HTML`(API概要ページ)へ自動
+     フォールバックする設計に変更(`RSCHIKETTO_WEB_DIR`環境変数で
+     配置場所を変更可能、既定`./web`)。新規`GET /pkg/:file`ハンドラで
+     `wasm-bindgen`生成物(`rs_red_web.js`/`rs_red_web_bg.wasm`)を配信
+     (パストラバーサル対策込み)。
+  3. **オンライン専用**(ユーザー確認済み、オフライン/Service Worker
+     対応は行わない)。**ピンチズームは標準の`viewport`メタタグのみで
+     Android/iOSのモバイルブラウザでそのまま機能する**——特別な実装は
+     一切していない。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --target wasm32-unknown-unknown`→`wasm-bindgen`で
+     `pkg/`生成→実際に`rs-chiketto`サーバーを起動し、Claude Browser
+     paneで`http://127.0.0.1:8299/`を開いて確認: (a)
+     ログイン画面が正しくレンダリングされコンソールエラー無し、
+     (b) メールアドレス入力→「ワンタイムコードを送信」クリックで
+     実際に`fetch()`→バックエンドAPI→`503`(SMTP未設定)が返り、
+     期待通り「SMTP未設定のため、このサーバーではOTP送信できません。」
+     という日本語メッセージが画面に表示されることを確認(WASM↔API間の
+     実通信が機能している証拠)。**正直な開示**: SMTPが無い環境のため、
+     ログイン後のチケット/Wiki操作フロー自体はブラウザ実機では
+     未検証(既存のハンドラレベルテストでのみ検証済み)。
+  5. **既存テストの修正**: `GET /`が`web/index.html`(GUI)を優先する
+     ようになったため、`root_returns_landing_page_with_key_markers`が
+     期待する内容を新しいGUIシェルのマーカー(`<title>RS-Red</title>`・
+     `request-otp-btn`)に更新。フォールバック時(`web/`不在)の専用
+     テストは、`RSCHIKETTO_WEB_DIR`環境変数がプロセス全体で共有され
+     `cargo test`のデフォルト並行実行下で他テストと競合しフレーキーに
+     なるリスクを避けるため、あえて追加していない(コードレビューで
+     明らかに正しい単純な分岐のため許容)。
+  6. **検証**: `cargo test`(サーバー側)**38件全green**。
+  - 次にすべきこと: (1) 実SMTP環境でのログイン→チケット/Wiki操作の
+    ブラウザ実機フルE2E、(2) ストレージ先選択機能(前HANDOFFエントリ
+    参照)、(3) `aruaru-db`/PostgreSQL DUAL DB移行、(4) ガントチャート・
+    カレンダーのGUI実装、(5) VPSへのデプロイ(GUI込みでの初回公開)。
+
 - **2026-07-23(続き) 永続化層をRustJSON経由に変更、ストレージ先の
   選択制構想を記録(ユーザー指示、複数回にわたり要件が拡張)**:
   1. **完了**: `src/rustjson.rs`(RPoemの`open-runo-rustjson`を移植)を

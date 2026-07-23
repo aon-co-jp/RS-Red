@@ -8,7 +8,31 @@
 Rust+[poem](https://github.com/poem-web/poem)(RPoem)版。運用時はVPSレンタル
 サーバー費用を安く抑えられる予定です。
 
-> ⚠️ v0.1.0時点ではチケット(Issue)・プロジェクトのCRUDのみ。詳細は`CLAUDE.md`参照。
+> ⚠️ v0.1.0時点ではチケット(Issue)・プロジェクトのCRUD・Wiki・コメントまで。
+> Redmine全体の機能網羅率としてはまだ2〜3割程度。詳細は`CLAUDE.md`参照。
+
+## ブラウザGUI(`web/`、Rust→WebAssembly)
+
+チケット管理を行うWEBアプリである以上GUIは基本機能——という方針で、
+オンライン専用のブラウザフロントエンドを同梱している(Tauri・Node.js・
+TypeScriptは不使用)。`cargo run`でサーバーを起動すると`GET /`で
+自動的に配信される(`web/index.html`+`web/pkg/`が存在しない場合は
+旧来のAPI概要ページへ自動フォールバック)。
+
+- OTPログイン、プロジェクト一覧・作成、チケット一覧・作成・詳細表示・
+  ステータス変更・コメント投稿、Wiki一覧・作成・閲覧に対応。
+- ピンチズームはブラウザ標準機能(`viewport`メタタグ)のため、
+  Android/iOSのモバイルブラウザで特別な実装なしにそのまま動作する。
+
+### GUIのビルド方法
+
+```bash
+cd web
+rustup target add wasm32-unknown-unknown  # 初回のみ
+cargo install wasm-bindgen-cli             # 初回のみ、Cargo.lockのバージョンに合わせる
+cargo build --target wasm32-unknown-unknown
+wasm-bindgen --target web --no-typescript --out-dir pkg target/wasm32-unknown-unknown/debug/rs_red_web.wasm
+```
 
 ## API エンドポイント
 
