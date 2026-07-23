@@ -4,6 +4,7 @@
 //! キュー(承認待ち)は不要——投稿時点で既に権限確認済み(`main.rs`参照)。
 //! 永続化は既存の`project.rs`/`accounts.rs`と同じJSONファイルパターン。
 
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -36,16 +37,18 @@ fn comments_path(data_root: &Path) -> PathBuf {
     data_root.join("comments.json")
 }
 
-pub async fn load(data_root: &Path) -> CommentStore {
-    match tokio::fs::read(comments_path(data_root)).await {
+pub async fn load(data_root: &Path, backend: &dyn StorageBackend) -> CommentStore {
+    let path = comments_path(data_root).to_string_lossy().to_string();
+    match backend.read(&path).await {
         Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => CommentStore::default(),
     }
 }
 
-pub async fn save(data_root: &Path, store: &CommentStore) -> std::io::Result<()> {
+pub async fn save(data_root: &Path, store: &CommentStore, backend: &dyn StorageBackend) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(store).expect("CommentStore serialization is infallible");
-    tokio::fs::write(comments_path(data_root), bytes).await
+    let path = comments_path(data_root).to_string_lossy().to_string();
+    backend.write(&path, &bytes).await
 }
 
 #[cfg(test)]
@@ -67,9 +70,9 @@ mod tests {
             body: "looks good".to_string(),
             created_at: crate::project::now_rfc3339(),
         });
-        save(&dir, &store).await.unwrap();
+        save(&dir, &store, &crate::storage::LocalFsBackend).await.unwrap();
 
-        let loaded = load(&dir).await;
+        let loaded = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(loaded.comments.len(), 1);
         assert_eq!(loaded.for_ticket(7).len(), 1);
         assert_eq!(loaded.for_ticket(999).len(), 0);
@@ -81,7 +84,7 @@ mod tests {
     #[tokio::test]
     async fn load_missing_file_returns_default() {
         let dir = std::env::temp_dir().join(format!("rschiketto-comment-missing-{}", std::process::id()));
-        let store = load(&dir).await;
+        let store = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(store.comments.len(), 0);
         assert_eq!(store.next_id, 0);
     }
