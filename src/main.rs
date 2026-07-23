@@ -6,11 +6,12 @@
 //! ## 正直な開示(最重要、`RGit`/`aruaru-llm`と同じ流儀)
 //!
 //! **v0.1.0時点では、チケット(Issue)・プロジェクトのCRUD、プロジェクトの
-//! サブプロジェクト階層、チケットへのコメントを実装している。**
+//! サブプロジェクト階層、チケットへのコメント、プロジェクト単位Wiki
+//! (改訂履歴保持)を実装している。**
 //! Redmineが持つ以下の機能は**まだ一切無い**:
 //!
 //! - ガントチャート・カレンダー
-//! - Wiki・フォーラム
+//! - フォーラム
 //! - リポジトリ連携(SCM閲覧、[`RGit`](https://github.com/aon-co-jp/RGit)との連携は将来検討)
 //! - カスタムフィールド・ワークフロー
 //!
@@ -25,6 +26,7 @@ mod auth;
 mod comments;
 mod mail;
 mod project;
+mod wiki;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -499,6 +501,140 @@ async fn delete_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, st
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
 }
 
+#[derive(Deserialize)]
+struct CreateWikiPageRequest {
+    slug: String,
+    title: String,
+    body: String,
+}
+
+/// `POST /api/projects/:id/wiki` — プロジェクト配下に新規Wikiページを
+/// 作成する。対象プロジェクトへの`Need::Edit`権限が必要
+/// (`create_comment`と同じ権限モデル)。`slug`はプロジェクト内で一意。
+#[handler]
+async fn create_wiki_page(
+    req: &Request,
+    PathExtractor(project_id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<CreateWikiPageRequest>,
+) -> PoemResult<Response> {
+    let projects = project::load(&state.data_root).await;
+    if !projects.exists(project_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
+    }
+    check_project_access(req, &state, project_id, access::Need::Edit).await?;
+    let Some(author_email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    if body.slug.trim().is_empty() || body.title.trim().is_empty() || body.body.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("slug, title and body must not be empty"));
+    }
+    let mut store = wiki::load(&state.data_root).await;
+    if store.slug_taken(project_id, &body.slug) {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("slug already in use for this project"));
+    }
+    let id = store.next_id;
+    store.next_id += 1;
+    let page = wiki::WikiPage {
+        id,
+        project_id,
+        slug: body.slug.clone(),
+        title: body.title.clone(),
+        revisions: vec![wiki::WikiRevision { body: body.body.clone(), author_email, created_at: project::now_rfc3339() }],
+    };
+    store.pages.push(page.clone());
+    wiki::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&page).unwrap_or_default()))
+}
+
+/// `GET /api/projects/:id/wiki` — プロジェクト配下のWikiページ一覧
+/// (対象プロジェクトへの`Need::View`権限が必要)。
+#[handler]
+async fn list_wiki_pages(req: &Request, PathExtractor(project_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let projects = project::load(&state.data_root).await;
+    if !projects.exists(project_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
+    }
+    check_project_access(req, &state, project_id, access::Need::View).await?;
+    let store = wiki::load(&state.data_root).await;
+    let pages = store.for_project(project_id);
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&pages).unwrap_or_default()))
+}
+
+/// `GET /api/wiki/:id` — Wikiページの最新版を取得する(所属プロジェクトへの
+/// `Need::View`権限が必要、`get_ticket`と同じ「まず存在確認してから権限
+/// チェック」の順序)。
+#[handler]
+async fn get_wiki_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let store = wiki::load(&state.data_root).await;
+    let Some(page) = store.find(id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
+    };
+    check_project_access(req, &state, page.project_id, access::Need::View).await?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(page).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct UpdateWikiPageRequest {
+    body: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+/// `PUT /api/wiki/:id` — 新しいリビジョンを追記する(旧内容は`revisions`に
+/// 残したまま、履歴を保持する)。所属プロジェクトへの`Need::Edit`権限が
+/// 必要。
+#[handler]
+async fn update_wiki_page(
+    req: &Request,
+    PathExtractor(id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<UpdateWikiPageRequest>,
+) -> PoemResult<Response> {
+    let mut store = wiki::load(&state.data_root).await;
+    let Some(project_id) = store.find(id).map(|p| p.project_id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
+    };
+    check_project_access(req, &state, project_id, access::Need::Edit).await?;
+    let Some(author_email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    if body.body.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("body must not be empty"));
+    }
+    let page = store.find_mut(id).expect("id was just confirmed to exist in the same store");
+    if let Some(title) = &body.title {
+        page.title = title.clone();
+    }
+    page.revisions.push(wiki::WikiRevision { body: body.body.clone(), author_email, created_at: project::now_rfc3339() });
+    let updated = page.clone();
+    wiki::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
+}
+
+/// `DELETE /api/wiki/:id` — Wikiページを削除する(管理者のみ、
+/// `create_project`等と同じ「構造を作れる/壊せるのは管理者のみ」方針)。
+#[handler]
+async fn delete_wiki_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = wiki::load(&state.data_root).await;
+    if store.find(id).is_none() {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
+    }
+    store.pages.retain(|p| p.id != id);
+    wiki::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
 /// トップページ(`GET /`)のHTMLランディングページ。
 /// ブラウザで実インスタンスへアクセスしたユーザーへ、アプリの概要・
 /// 実装済みAPI一覧・未実装機能の正直な開示・ダウンロードリンクを示す
@@ -808,6 +944,8 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
         .at("/api/tickets/:id", get(get_ticket).put(update_ticket))
         .at("/api/tickets/:id/comments", get(list_comments).post(create_comment))
         .at("/api/comments/:id", delete(delete_comment))
+        .at("/api/projects/:id/wiki", get(list_wiki_pages).post(create_wiki_page))
+        .at("/api/wiki/:id", get(get_wiki_page).put(update_wiki_page).delete(delete_wiki_page))
         .data(state)
         .with(Tracing)
 }
@@ -1355,5 +1493,102 @@ mod handler_tests {
         let arr = body.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["body"], "admin note");
+    }
+
+    /// Wiki: 編集権限を持つアカウントのみがページ作成・改訂でき、閲覧権限が
+    /// あれば履歴を保持したまま最新版を取得できることを確認する。
+    /// (未ログイン401・無許可403・許可済み成功、既存のコメント/チケットと
+    /// 同じ権限モデルの検証パターン)。
+    #[tokio::test]
+    async fn wiki_page_lifecycle_is_gated_by_project_access_and_keeps_revision_history() {
+        let state = make_state("wiki-lifecycle", true).await;
+        let data_root = state.data_root.clone();
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let created = client
+            .post("/api/projects")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "wiki-proj" }))
+            .send()
+            .await;
+        created.assert_status(poem::http::StatusCode::CREATED);
+        let project_id = created.json().await.value().deserialize::<serde_json::Value>()["id"].as_u64().unwrap();
+
+        // 未ログインでのページ作成は401。
+        client
+            .post(format!("/api/projects/{project_id}/wiki"))
+            .body_json(&serde_json::json!({ "slug": "start", "title": "Start", "body": "v1" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // 管理者(常に編集可)でページを作成。
+        let page = client
+            .post(format!("/api/projects/{project_id}/wiki"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "slug": "start", "title": "Start", "body": "v1" }))
+            .send()
+            .await;
+        page.assert_status(poem::http::StatusCode::CREATED);
+        let page_id = page.json().await.value().deserialize::<serde_json::Value>()["id"].as_u64().unwrap();
+
+        // 同じslugでの再作成は400(プロジェクト内で一意)。
+        client
+            .post(format!("/api/projects/{project_id}/wiki"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "slug": "start", "title": "dup", "body": "v1" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::BAD_REQUEST);
+
+        // editが無い一般ユーザーは改訂できない(403)。
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_session = stranger_state.auth.create_session("stranger@example.com");
+        let stranger_app = build_routes(stranger_state);
+        let stranger_client = TestClient::new(stranger_app);
+        stranger_client
+            .put(format!("/api/wiki/{page_id}"))
+            .header("Authorization", format!("Bearer {stranger_session}"))
+            .body_json(&serde_json::json!({ "body": "hacked" }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        // 管理者が改訂すると履歴に旧版が残ったまま最新版が更新される。
+        let updated = client
+            .put(format!("/api/wiki/{page_id}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "body": "v2" }))
+            .send()
+            .await;
+        updated.assert_status_is_ok();
+        let updated_body: serde_json::Value = updated.json().await.value().deserialize();
+        let revisions = updated_body["revisions"].as_array().unwrap();
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0]["body"], "v1");
+        assert_eq!(revisions[1]["body"], "v2");
+
+        // GET /api/wiki/:id は最新の履歴を含めて取得できる。
+        let fetched = client.get(format!("/api/wiki/{page_id}")).header("Authorization", format!("Bearer {admin}")).send().await;
+        fetched.assert_status_is_ok();
+        let fetched_body: serde_json::Value = fetched.json().await.value().deserialize();
+        assert_eq!(fetched_body["revisions"].as_array().unwrap().len(), 2);
+
+        // 管理者のみページを削除できる。
+        client
+            .delete(format!("/api/wiki/{page_id}"))
+            .header("Authorization", format!("Bearer {stranger_session}"))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::UNAUTHORIZED);
+        client.delete(format!("/api/wiki/{page_id}")).header("Authorization", format!("Bearer {admin}")).send().await.assert_status_is_ok();
+        client
+            .get(format!("/api/wiki/{page_id}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::NOT_FOUND);
     }
 }

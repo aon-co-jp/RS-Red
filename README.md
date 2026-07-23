@@ -29,6 +29,9 @@ Rust+[poem](https://github.com/poem-web/poem)(RPoem)版。運用時はVPSレン�
 | `GET /api/tickets/:id` / `PUT /api/tickets/:id` | チケット詳細取得 / 更新(ステータス変更含む) |
 | `GET /api/tickets/:id/comments` / `POST /api/tickets/:id/comments` | コメント一覧取得(閲覧権限が必要) / 投稿(編集権限が必要) |
 | `DELETE /api/comments/:id` | コメント削除(管理者または投稿者本人のみ) |
+| `GET /api/projects/:id/wiki` / `POST /api/projects/:id/wiki` | プロジェクト配下のWikiページ一覧(閲覧権限が必要) / 新規作成(編集権限が必要、`slug`はプロジェクト内で一意) |
+| `GET /api/wiki/:id` / `PUT /api/wiki/:id` | Wikiページ取得(改訂履歴含む、閲覧権限が必要) / 新しいリビジョンを追記(編集権限が必要、旧版は履歴に保持) |
+| `DELETE /api/wiki/:id` | Wikiページ削除(管理者のみ) |
 
 ## インストール(ビルド済みバイナリ、インストーラー付き)
 

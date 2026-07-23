@@ -81,6 +81,37 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23 プロジェクト単位Wikiを追加(HANDOFF記載の宿題「Wiki・
+  ガントチャート等の追加機能」への対応、ユーザー指示「並列で開発」)**:
+  1. `src/wiki.rs`を新設: `WikiPage { id, project_id, slug, title,
+     revisions: Vec<WikiRevision> }`と`WikiStore`(既存の`project.rs`/
+     `comments.rs`と同じJSONファイル永続化パターン、`wiki.json`)。
+     編集のたびに`WikiRevision`を`revisions`へ追記し、旧内容は保持する
+     (差分表示は今回スコープ外、最小限の履歴保持のみ)。
+  2. `main.rs`に`POST/GET /api/projects/:id/wiki`
+     (一覧=`Need::View`、作成=`Need::Edit`、`slug`はプロジェクト内で
+     一意)・`GET/PUT/DELETE /api/wiki/:id`(取得=`Need::View`、
+     改訂=`Need::Edit`、削除=管理者のみ)を追加。既存の
+     `comments.rs`/`access.rs`の権限モデルをそのまま再利用
+     (複数パスパラメータ〈`:id/:slug`〉の実績がこのコードベースに
+     無かったため、リスクを避けて単一パラメータ設計〈`/api/wiki/:id`〉
+     に統一——一覧のみプロジェクトIDで、詳細操作はWikiページ自身の
+     連番IDで行う)。
+  3. テスト追加: `wiki.rs`のストレージ往復・`latest()`ヘルパー3件、
+     ハンドラレベルで`wiki_page_lifecycle_is_gated_by_project_access_
+     and_keeps_revision_history`(未ログイン401・無許可403・重複slug
+     400・管理者による改訂で履歴が2件に増えること・削除後は404、を
+     一気通貫で検証)。
+  4. **検証**: `cargo build`警告1件(`WikiPage::latest()`が現状呼ばれて
+     いないという`dead_code`警告のみ、既存の`AccelBackend`等未実装
+     拡張点と同じ許容パターン)。`cargo test` **33件全green**
+     (前回28件+今回5件〈wiki.rs単体4件・handler_tests 1件〉)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→Wikiページ作成の
+    フルE2E(今回もハンドラレベルテストでの代替検証に留まる)、
+    (2) ガントチャート・カレンダー、(3) `aruaru-db`/PostgreSQL DUAL DB
+    構成への移行(現状はJSONファイル永続化)、(4) VPSへのデプロイ
+    (今回は未実施)。
+
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
   VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
   (`Cargo.toml`+`poem`)でのブートストラップに着手する。
