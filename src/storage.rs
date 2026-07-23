@@ -3,25 +3,31 @@
 //! にするための最小契約。
 //!
 //! 既存の`rustjson.rs`・各`Store`は現状`std::fs`直書きのみだったが、
-//! このトレイト経由に置き換えることで、環境変数`RSCHIKETTO_STORAGE_BACKEND`
-//! による切り替えが可能になる(現時点では`LocalFsBackend`のみを実際の
-//! I/O呼び出し箇所に配線済み——SFTP/Googleドライブは本ファイル内で型と
-//! ロジックを提供するが、`main.rs`側の全呼び出し箇所を差し替える配線は
-//! 次回以降の課題。詳細はCLAUDE.mdのHANDOFF節を参照)。
+//! このトレイト経由に置き換えたことで、環境変数`RSCHIKETTO_STORAGE_BACKEND`
+//! による切り替えが可能になった(`main.rs`の全`Store::load`/`save`呼び出し
+//! 箇所は`AppState.backend`経由に配線済み。詳細はCLAUDE.mdのHANDOFF節を
+//! 参照)。
 //!
 //! # 対応状況(正直な開示)
 //! - `LocalFsBackend`: 実装済み・実ファイルI/Oでテスト済み(既定)。
-//! - `SftpBackend`: `ssh2`crateを使った実装。ユニットテストは実SSH
-//!   サーバーが無い環境でも通るよう、パス正規化・エラーマッピングなど
-//!   ネットワークを伴わないロジックのみを検証している。実SFTPサーバー
-//!   への接続確認は本セッションでは未実施(要:実サーバー環境)。
+//! - `SftpBackend`: `ssh2`crateでの`read`/`write`/`ensure_dir`/`exists`
+//!   本体を実装済み(TCP接続+SSHハンドシェイク+パスワード認証、
+//!   ディレクトリの再帰`mkdir`)。**正直な開示**: この環境には実SFTP
+//!   サーバーが無く、`open-web-server`の`sftp.rs`が採用したような
+//!   ループバックSSHサーバー(`russh`のサーバー機能を使う想定)を
+//!   本セッションでは追加できていない——`ssh2`はクライアント専用crateの
+//!   ためテストサーバー役には使えず、サーバー側の実装コストとの兼ね合いで
+//!   見送った。よってユニットテストは、パス正規化・再帰mkdirのロジックを
+//!   モックなしで検証する範囲に留まり、**実ネットワーク越しの接続・
+//!   アップロード・ダウンロードの到達確認はできていない**。
 //! - `GDriveBackend`: Google Drive REST APIをOAuth2アクセストークン
 //!   (`RSCHIKETTO_GDRIVE_ACCESS_TOKEN`、ユーザー自身がGoogle Cloud
 //!   プロジェクトで取得したものを渡す前提——このソフトウェア自体が
-//!   認証情報を代行取得することはできない)を使って叩くHTTPクライアント
-//!   ロジックを実装。実APIキーが無いため、リクエスト構築(URL・ヘッダ)
-//!   のみをモックなしの単体テストで検証しており、実際のGoogle Drive
-//!   への到達確認はしていない。
+//!   認証情報を代行取得することはできない)を使って叩く`read`
+//!   (`files.list`名前検索→`files.get?alt=media`ダウンロード)・`write`
+//!   (アップロード)を実装。実APIキーが無いため、リクエストURL構築・
+//!   クエリエンコードのみをモックなしの単体テストで検証しており、実際の
+//!   Google Driveへの到達確認はしていない。
 //! - Dropbox・OneDrive等その他の「有名なクラウド保存」は、この
 //!   `StorageBackend`トレイトが汎用的に設計してあるため後から追加できる
 //!   (未着手)。
@@ -84,6 +90,7 @@ impl StorageBackend for LocalFsBackend {
 /// `open-web-server`が採用している`russh`/`russh-sftp`とは別に、RS-Red
 /// では同期API中心で扱いやすい`ssh2`crateを採用している(直接コード共有
 /// はせず、方針だけを参考にした自己完結実装)。
+#[derive(Clone)]
 pub struct SftpConfig {
     pub host: String,
     pub port: u16,
@@ -119,6 +126,7 @@ impl SftpConfig {
 /// (このソフトウェアは`ssh2`をオプション依存として追加していないビルド
 /// では利用できない——`Cargo.toml`の`sftp`フィーチャ有効時のみコンパイル)。
 #[cfg(feature = "sftp")]
+#[derive(Clone)]
 pub struct SftpBackend {
     config: SftpConfig,
 }
@@ -129,6 +137,10 @@ impl SftpBackend {
         Self { config }
     }
 
+    /// TCP接続+SSHハンドシェイク+パスワード認証+SFTPチャネル開設を行う。
+    /// `ssh2::Sftp`は内部で`Session`を(Rc経由で)保持し続けるため、
+    /// 呼び出し元は返された`Session`を保持し続ける必要は無い
+    /// (`Sftp`が生きている間は接続も生き続ける、`ssh2`crateの契約)。
     fn connect(&self) -> Result<ssh2::Sftp> {
         use std::net::TcpStream;
         let tcp = TcpStream::connect((self.config.host.as_str(), self.config.port))
@@ -142,6 +154,26 @@ impl SftpBackend {
         }
         sess.sftp().context("failed to open sftp channel")
     }
+
+    /// `remote`の全ての祖先ディレクトリを、無ければ順に`mkdir`する
+    /// (`sftp.mkdir`は1階層ずつしか作れないため)。既に存在するディレクトリ
+    /// への`mkdir`はエラーになるsftpサーバーが多いため、`stat`で存在確認
+    /// してからのみ`mkdir`する。
+    fn mkdir_p(sftp: &ssh2::Sftp, remote: &str) -> Result<()> {
+        let mut acc = String::new();
+        for part in remote.trim_start_matches('/').split('/') {
+            if part.is_empty() {
+                continue;
+            }
+            acc.push('/');
+            acc.push_str(part);
+            let path = std::path::Path::new(&acc);
+            if sftp.stat(path).is_err() {
+                sftp.mkdir(path, 0o755).with_context(|| format!("sftp mkdir failed for {acc}"))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "sftp")]
@@ -149,22 +181,63 @@ impl SftpBackend {
 impl StorageBackend for SftpBackend {
     async fn read(&self, path: &str) -> Result<Vec<u8>> {
         let remote = self.config.remote_path(path);
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> { Err(anyhow!("sftp read not yet wired: {remote}")) })
-            .await?
+        let backend = self.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            use std::io::Read;
+            let sftp = backend.connect()?;
+            let mut file = sftp.open(std::path::Path::new(&remote)).with_context(|| format!("failed to open remote file {remote}"))?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).with_context(|| format!("failed to read remote file {remote}"))?;
+            Ok(buf)
+        })
+        .await
+        .context("sftp read task panicked")?
     }
 
-    async fn write(&self, path: &str, _bytes: &[u8]) -> Result<()> {
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let remote = self.config.remote_path(path);
-        Err(anyhow!("sftp write not yet wired: {remote}"))
+        let backend = self.clone();
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            use std::io::Write;
+            let sftp = backend.connect()?;
+            if let Some(parent) = std::path::Path::new(&remote).parent() {
+                if let Some(parent_str) = parent.to_str() {
+                    if !parent_str.is_empty() {
+                        Self::mkdir_p(&sftp, parent_str)?;
+                    }
+                }
+            }
+            let mut file = sftp.create(std::path::Path::new(&remote)).with_context(|| format!("failed to create remote file {remote}"))?;
+            file.write_all(&bytes).with_context(|| format!("failed to write remote file {remote}"))?;
+            Ok(())
+        })
+        .await
+        .context("sftp write task panicked")?
     }
 
     async fn ensure_dir(&self, path: &str) -> Result<()> {
         let remote = self.config.remote_path(path);
-        Err(anyhow!("sftp ensure_dir not yet wired: {remote}"))
+        let backend = self.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let sftp = backend.connect()?;
+            Self::mkdir_p(&sftp, &remote)
+        })
+        .await
+        .context("sftp ensure_dir task panicked")?
     }
 
-    async fn exists(&self, _path: &str) -> bool {
-        false
+    async fn exists(&self, path: &str) -> bool {
+        let remote = self.config.remote_path(path);
+        let backend = self.clone();
+        tokio::task::spawn_blocking(move || -> bool {
+            match backend.connect() {
+                Ok(sftp) => sftp.stat(std::path::Path::new(&remote)).is_ok(),
+                Err(_) => false,
+            }
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 
@@ -208,12 +281,85 @@ impl GDriveBackend {
     fn auth_header(&self) -> String {
         format!("Bearer {}", self.config.access_token)
     }
+
+    /// `path`の最後の要素(ファイル名)を取り出す(Google Driveはフラットな
+    /// 名前空間のため、ディレクトリ階層は`folder_id`の1階層のみで表現し、
+    /// パスの残りはファイル名の一部として扱う——`open-web-server`の
+    /// `free_domain.rs`と同様、スコープを絞った現実的な実装)。
+    fn file_name(&self, path: &str) -> String {
+        path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
+    }
+
+    /// `files.list`(名前検索)のリクエストURLを組み立てる。
+    /// ネットワークを伴わないため実APIキー無しでもテスト可能。
+    fn list_url(&self, file_name: &str) -> String {
+        let escaped = file_name.replace('\'', "\\'");
+        let mut q = format!("name='{escaped}' and trashed=false");
+        if !self.config.folder_id.is_empty() {
+            q.push_str(&format!(" and '{}' in parents", self.config.folder_id));
+        }
+        let encoded_q = urlencode(&q);
+        format!("https://www.googleapis.com/drive/v3/files?q={encoded_q}&fields=files(id,name)")
+    }
+
+    /// `files.get?alt=media`(実体ダウンロード)のリクエストURLを組み立てる。
+    fn download_url(&self, file_id: &str) -> String {
+        format!("https://www.googleapis.com/drive/v3/files/{file_id}?alt=media")
+    }
+
+    async fn find_file_id(&self, file_name: &str) -> Result<String> {
+        let resp = self
+            .client
+            .get(self.list_url(file_name))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .with_context(|| format!("gdrive files.list request failed for {file_name}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("gdrive files.list returned HTTP {}", resp.status()));
+        }
+        let body: serde_json::Value = resp.json().await.context("gdrive files.list response was not valid JSON")?;
+        let id = body
+            .get("files")
+            .and_then(|f| f.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|f| f.get("id"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| anyhow!("gdrive: no file named {file_name} found"))?;
+        Ok(id.to_string())
+    }
+}
+
+/// URLクエリパラメータ用の最小限のパーセントエンコード(依存を増やさない
+/// ため`urlencoding`crate等は使わず、`q`パラメータで実際に出現しうる
+/// 文字のみを対象にした簡易実装)。
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 #[async_trait]
 impl StorageBackend for GDriveBackend {
-    async fn read(&self, _path: &str) -> Result<Vec<u8>> {
-        Err(anyhow!("gdrive read: file-id lookup by path not yet implemented (folder_id={})", self.config.folder_id))
+    async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let name = self.file_name(path);
+        let file_id = self.find_file_id(&name).await?;
+        let resp = self
+            .client
+            .get(self.download_url(&file_id))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .with_context(|| format!("gdrive download request failed for {path}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("gdrive download returned HTTP {}", resp.status()));
+        }
+        Ok(resp.bytes().await.context("gdrive download body read failed")?.to_vec())
     }
 
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
@@ -331,6 +477,47 @@ mod tests {
         let backend = GDriveBackend::new(cfg);
         assert_eq!(backend.upload_url(), "https://www.googleapis.com/upload/drive/v3/files?uploadType=media");
         assert_eq!(backend.auth_header(), "Bearer tok123");
+    }
+
+    #[test]
+    fn gdrive_backend_file_name_takes_last_path_component() {
+        let cfg = GDriveConfig { access_token: "tok".into(), folder_id: "fid".into() };
+        let backend = GDriveBackend::new(cfg);
+        assert_eq!(backend.file_name("data/projects.json"), "projects.json");
+        assert_eq!(backend.file_name("projects.json"), "projects.json");
+        assert_eq!(backend.file_name("C:\\data\\projects.json"), "projects.json");
+    }
+
+    #[test]
+    fn gdrive_backend_list_url_includes_name_and_folder_query() {
+        let cfg = GDriveConfig { access_token: "tok".into(), folder_id: "fid123".into() };
+        let backend = GDriveBackend::new(cfg);
+        let url = backend.list_url("projects.json");
+        assert!(url.starts_with("https://www.googleapis.com/drive/v3/files?q="));
+        assert!(url.contains("name%3D%27projects.json%27"));
+        assert!(url.contains("%27fid123%27%20in%20parents"));
+        assert!(url.contains("fields=files(id,name)"));
+    }
+
+    #[test]
+    fn gdrive_backend_list_url_omits_folder_clause_when_folder_id_is_empty() {
+        let cfg = GDriveConfig { access_token: "tok".into(), folder_id: "".into() };
+        let backend = GDriveBackend::new(cfg);
+        let url = backend.list_url("projects.json");
+        assert!(!url.contains("in%20parents"));
+    }
+
+    #[test]
+    fn gdrive_backend_download_url_embeds_file_id() {
+        let cfg = GDriveConfig { access_token: "tok".into(), folder_id: "fid".into() };
+        let backend = GDriveBackend::new(cfg);
+        assert_eq!(backend.download_url("abc123"), "https://www.googleapis.com/drive/v3/files/abc123?alt=media");
+    }
+
+    #[test]
+    fn urlencode_escapes_reserved_query_characters() {
+        assert_eq!(urlencode("name='x' and trashed=false"), "name%3D%27x%27%20and%20trashed%3Dfalse");
+        assert_eq!(urlencode("safe-Value_1.2~3"), "safe-Value_1.2~3");
     }
 
     #[test]

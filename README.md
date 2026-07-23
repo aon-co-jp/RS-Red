@@ -75,14 +75,25 @@ Windows/Linuxのネイティブバイナリで動作する。**Android版でこ�
 ## データ/DB保存先の選択(`StorageBackend`)
 
 環境変数`RSCHIKETTO_STORAGE_BACKEND`(`local`/`sftp`/`gdrive`、既定`local`)
-で選択できる想定の抽象化を`src/storage.rs`に実装済み。**現状
-`LocalFsBackend`(ローカルHDD/SSD/NVMe直書き)のみが実際に動作する**——
-`SftpBackend`(VPS/レンタルサーバー向け、`ssh2`crateベース)と
-`GDriveBackend`(Googleドライブ向け、`reqwest`でREST API直叩き)は型と
-一部ロジックまでの実装で、実サーバー・実APIキーでの到達確認は未実施
-(詳細・残作業は`CLAUDE.md`のHANDOFF節および`PORTING.md`参照)。
-Googleドライブ等クラウドAPIの利用にはユーザー自身がOAuth2認証情報を
-取得する必要があり、このソフトウェア単体で完結する機能ではない。
+で選択できる抽象化を`src/storage.rs`に実装し、既存の全`Store`
+(`project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/`access.rs`)の
+`load`/`save`をこの`StorageBackend`トレイト経由に配線済み。
+
+- **`local`(既定)**: `LocalFsBackend`、実ファイルI/Oでテスト済み。
+- **`sftp`**: VPS/レンタルサーバー向け、`ssh2`crateベース。`read`/
+  `write`/`ensure_dir`本体を実装済みだが、**この環境には実SFTPサーバーが
+  無く、実ネットワーク越しの到達確認はまだ済んでいない**(正直な開示)。
+- **`gdrive`**: Googleドライブ向け、`reqwest`でREST APIを直叩き
+  (`files.list`名前検索→`files.get`ダウンロード、アップロード)を
+  実装済みだが、**実APIキーでの到達確認は未実施**(正直な開示)。
+
+**上記の理由により、現時点で`RSCHIKETTO_STORAGE_BACKEND=sftp`/`gdrive`を
+指定しても、安全側の判断として自動的に`LocalFsBackend`にフォールバック
+する**(実ネットワーク到達確認が済むまでの暫定措置、`storage.rs`の
+`backend_from_env()`参照)。Googleドライブ等クラウドAPIの利用には
+ユーザー自身がOAuth2認証情報を取得する必要があり、このソフトウェア単体で
+完結する機能ではない。詳細・残作業は`CLAUDE.md`のHANDOFF節および
+`PORTING.md`参照。
 
 ## インストール(ビルド済みバイナリ、インストーラー付き)
 

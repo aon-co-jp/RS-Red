@@ -69,12 +69,13 @@ let bytes = serde_json::to_vec_pretty(store).expect("...");
   実装、続く同日セッションで既存`Store`群(`project.rs`/`comments.rs`/
   `wiki.rs`/`accounts.rs`/`access.rs`)の`load`/`save`を`StorageBackend`
   経由へ実配線済み(`cargo test`52件全green、`CLAUDE.md` HANDOFF参照)。
-  **残作業**: (1) `SftpBackend`の`read`/`write`/`ensure_dir`本体実装
-  (現状はエラーを返すプレースホルダ)+実SFTPサーバーでの到達確認、
-  (2) `GDriveBackend`の`read`(ファイルID解決)実装+実Google Drive
-  APIキーでの到達確認、(3) 上記完了後に`storage::backend_from_env()`の
-  「`local`以外は警告してフォールバック」を解除、(4) Dropbox/OneDrive等
-  追加プロバイダ。
+  `SftpBackend`(`ssh2`ベース、`read`/`write`/`ensure_dir`/`exists`本体
+  実装済み)・`GDriveBackend`(`read`/`write`実装済み)も本体コードは
+  揃った。**残作業**: (1) 実SFTPサーバー(またはループバックSSHサーバー)
+  での`SftpBackend`到達確認(本セッションでは未実施、`CLAUDE.md`
+  HANDOFF参照)、(2) 実Google Drive APIキーでの`GDriveBackend`到達確認、
+  (3) 上記完了後に`storage::backend_from_env()`の「`local`以外は警告して
+  フォールバック」を解除、(4) Dropbox/OneDrive等追加プロバイダ。
 - `aruaru-db`/PostgreSQL DUAL DB構成への移行(現状はJSONファイルのみ)。
 - ガントチャート・カレンダーのGUI実装(バックエンド側の`Ticket.start_date`/
   `due_date`/`done_ratio`と`GET /api/tickets`の`status`/`project_id`絞り込み
