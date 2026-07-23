@@ -81,6 +81,32 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23(続き) Redmine比較の完成度評価とAndroid版クロス
+  コンパイル実証(ユーザー指示「WindowsとLINUXと早期に省電力版か通常版か
+  常時電源接続版を選択可能」「Androidスマホとタブレット版も対応」
+  「将来はMACなどにも対応したい」)**:
+  - **完成度の正直な評価**: チケット管理+Wikiという核の部分は動くが、
+    Redmine全体の機能網羅率としては**まだ2〜3割程度**。ガントチャート・
+    カレンダー・フォーラム・SCM連携・カスタムフィールドが未実装、
+    永続化もJSONファイルのみ(`aruaru-db`/PostgreSQL DUAL DB移行が
+    未着手)。
+  - **Android版の実現可能性を実証**(`open-web-server`側と同じ手法):
+    `cargo ndk -t aarch64-linux-android build --release`が**一発で
+    成功**し、`target/aarch64-linux-android/release/rs-chiketto`が
+    実際のAndroid ELFバイナリ(`for Android 21`、NDK r27b)として
+    生成されることを確認した。`open-web-server`と違いTLS/QUIC/ACMEの
+    重い依存が無いため、openssl-sys系の問題も発生しなかった。
+  - **次にすべきこと(優先順位)**: (1) ガントチャート・カレンダー
+    (Redmine完成度向上として最優先)、(2) `aruaru-db`/PostgreSQL DUAL DB
+    構成への移行、(3) Windows/Linux版のインストーラー+電源プロファイル
+    (省電力版/常時電源接続版/通常版)対応——`open-web-server`側で
+    先行する同様の要件と設計を揃えること、(4) Android版アプリ化
+    (APK同梱・フォアグラウンドサービス・電源プロファイル連携、
+    コアバイナリのクロスコンパイル自体は実証済み)、(5) 将来のmacOS対応
+    (RustのmacOSクロスコンパイル自体は成熟しているが、この開発環境
+    〈Windows〉ではmacOS SDKが無くローカル検証は不可、実機確認は
+    macOS環境が使えるセッションで行うこと)。
+
 - **2026-07-23 プロジェクト単位Wikiを追加(HANDOFF記載の宿題「Wiki・
   ガントチャート等の追加機能」への対応、ユーザー指示「並列で開発」)**:
   1. `src/wiki.rs`を新設: `WikiPage { id, project_id, slug, title,
