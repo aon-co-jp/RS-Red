@@ -81,6 +81,53 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23(続き) 永続化層をRustJSON経由に変更、ストレージ先の
+  選択制構想を記録(ユーザー指示、複数回にわたり要件が拡張)**:
+  1. **完了**: `src/rustjson.rs`(RPoemの`open-runo-rustjson`を移植)を
+     新設し、`project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/
+     `access.rs`の`load()`を`serde_json::from_slice`から
+     `rustjson::parse_typed`(緩い構文を許容、パース結果は標準
+     `serde_json::Value`)へ変更。書き込みは引き続き整形済み標準JSON。
+     `cargo test`38件全green。
+  2. **未着手・構想段階のストレージ先選択機能(ユーザー指示、原文の
+     要件をそのまま記録)**: 「DBやDATAは、Androidスマホ版は、
+     Googleドライブに保存をデフォルトにして。WindowsやLINUXは、その
+     HDDやSSDやnVMEでの保存を基本にして。保存先をGoogleドライブ以外
+     にも有名なクラウド保存やレンタルサーバーやVPSサーバーなども
+     簡単にフォルダーを作れる機能を搭載でいくつか選択可能にして」。
+     整理すると:
+     - **Windows/Linux既定**: ローカルディスク(HDD/SSD/NVMe)——
+       これは現状の`RSCHIKETTO_DATA_DIR`環境変数によるローカル
+       パス指定のままで既に満たしている。
+     - **Android既定**: Googleドライブ(Android版アプリ自体が
+       まだ存在しないため、Android版アプリシェル開発〈HANDOFF
+       「2026-07-23(続き) Redmine比較の完成度評価」節参照〉と
+       セットで実装する必要がある)。
+     - **選択可能な追加ストレージ先**: Googleドライブ以外の有名クラウド
+       ストレージ(Dropbox・OneDrive等、複数)、およびレンタルサーバー/
+       VPSサーバー上に「簡単にフォルダーを作れる」機能(SFTPやWebDAV
+       経由のリモートディレクトリ作成・書き込みが現実的な実装候補)。
+     - **設計方針(次回着手時の指針)**: 現状の`load`/`save`は
+       `tokio::fs::read`/`tokio::fs::write`によるローカルファイル
+       直接アクセスに閉じている。複数ストレージ先を選択可能にするには、
+       ローカルファイル・Google Drive API・Dropbox API・
+       SFTP/WebDAVをそれぞれ実装した共通の`StorageBackend`
+       トレイル抽象化が必要(`open-web-server-ledger::PostgresWal`等が
+       `WriteAheadLog`traitを実装する既存パターンと同じ設計思想)。
+       **正直な開示**: クラウドAPI連携(特にGoogle Drive/Dropbox)は
+       OAuth2認証情報(クライアントID/シークレット)をユーザー自身が
+       各サービスのデベロッパーコンソールで取得・設定する必要があり、
+       このアプリ単体で完結する機能ではない——着手時にこの制約を
+       ユーザーへ明示すること。
+  3. **`aruaru-db`/PostgreSQL DUAL DB構成への移行は今回も未着手のまま**
+     (RJSON移植は「JSONファイルの読み込み方」の改善であり、DB移行とは
+     別軸。DUAL DB移行は別途大きめの増分として着手すること)。
+  - 次にすべきこと: (1) 上記ストレージ選択機能の`StorageBackend`
+    トレイト設計・ローカルファイル実装への移行(既存動作を壊さない
+    最初の一歩)、(2) `aruaru-db`/PostgreSQL DUAL DB構成、(3) Android版
+    アプリシェル開発(Googleドライブ既定保存とセット)、(4) ガント
+    チャート・カレンダー。
+
 - **2026-07-23(続き) Redmine比較の完成度評価とAndroid版クロス
   コンパイル実証(ユーザー指示「WindowsとLINUXと早期に省電力版か通常版か
   常時電源接続版を選択可能」「Androidスマホとタブレット版も対応」
