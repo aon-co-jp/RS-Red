@@ -713,12 +713,42 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </html>
 "#;
 
+/// `GET /` — ブラウザGUI(`web/index.html`)を配信する。GUIビルド成果物
+/// (`web/index.html`+`web/pkg/`)が存在しない環境では、後方互換として
+/// 旧来の`INDEX_HTML`(API概要ページ)へフォールバックする(ユーザー
+/// 指示「チケット管理を行なうWEBアプリなのでGUIは基本」、2026-07-23)。
 #[handler]
 async fn index() -> Response {
-    Response::builder()
-        .status(poem::http::StatusCode::OK)
-        .content_type("text/html; charset=utf-8")
-        .body(INDEX_HTML)
+    match tokio::fs::read_to_string(web_root().join("index.html")).await {
+        Ok(html) => Response::builder().status(poem::http::StatusCode::OK).content_type("text/html; charset=utf-8").body(html),
+        Err(_) => Response::builder().status(poem::http::StatusCode::OK).content_type("text/html; charset=utf-8").body(INDEX_HTML),
+    }
+}
+
+fn web_root() -> PathBuf {
+    std::env::var("RSCHIKETTO_WEB_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("./web"))
+}
+
+/// `GET /pkg/:file` — WASMビルド成果物(`rs_red_web.js`/`rs_red_web_bg.wasm`)
+/// を配信する。パストラバーサル対策として、ファイル名に`/`や`..`を
+/// 含む場合は拒否する(`open-web-server`の`static_files.rs`と同じ方針)。
+#[handler]
+async fn serve_pkg(PathExtractor(file): PathExtractor<String>) -> Response {
+    if file.contains("..") || file.contains('/') || file.contains('\\') {
+        return Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("invalid path");
+    }
+    let path = web_root().join("pkg").join(&file);
+    let content_type = if file.ends_with(".wasm") {
+        "application/wasm"
+    } else if file.ends_with(".js") {
+        "application/javascript"
+    } else {
+        "application/octet-stream"
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Response::builder().status(poem::http::StatusCode::OK).content_type(content_type).body(bytes),
+        Err(_) => Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("not found"),
+    }
 }
 
 #[handler]
@@ -930,6 +960,7 @@ fn env_data_dir() -> PathBuf {
 fn build_routes(state: AppState) -> impl poem::Endpoint {
     Route::new()
         .at("/", get(index))
+        .at("/pkg/:file", get(serve_pkg))
         .at("/healthz", get(healthz))
         .at("/api/auth/request-otp", post(request_otp))
         .at("/api/auth/verify-otp", post(verify_otp))
@@ -1028,7 +1059,11 @@ mod handler_tests {
     #[tokio::test]
     async fn root_returns_landing_page_with_key_markers() {
         // UXバグ修正の検証: JSON APIオンリーで何も表示されなかった`GET /`が
-        // アプリ名・実エンドポイント・ダウンロードリンクを含むHTMLを返すこと。
+        // 何らかのHTMLを返すこと。2026-07-23、`web/index.html`(ブラウザGUI)
+        // が存在する場合はそちらを優先して返すよう変更されたため
+        // (ユーザー指示「チケット管理を行なうWEBアプリなのでGUIは基本」)、
+        // `cargo test`実行時のカレントディレクトリ(リポジトリルート)には
+        // 実際に`web/index.html`が存在し、GUIシェルが返る。
         let state = make_state("landing-page", true).await;
         let app = build_routes(state);
         let client = TestClient::new(app);
@@ -1036,10 +1071,17 @@ mod handler_tests {
         let resp = client.get("/").send().await;
         resp.assert_status_is_ok();
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("RS-Chiketto"));
-        assert!(body.contains("/api/tickets"));
-        assert!(body.contains("https://github.com/aon-co-jp/RS-Chiketto/releases/latest"));
+        assert!(body.contains("<title>RS-Red</title>"));
+        assert!(body.contains("request-otp-btn"));
     }
+
+    // 正直な開示: `web/index.html`が存在しない場合のフォールバック
+    // (`INDEX_HTML`)自体は`index()`のコードレビューで明らかに正しい
+    // 単純なmatch分岐だが、専用テストは追加していない——
+    // `RSCHIKETTO_WEB_DIR`環境変数はプロセス全体で共有されるため、
+    // `cargo test`のデフォルトの並行実行下で他のテスト(同じ`GET /`を
+    // 叩く`root_returns_landing_page_with_key_markers`)と競合し
+    // フレーキーになるリスクを避けた。
 
     #[tokio::test]
     async fn self_service_account_request_returns_201_and_creates_pending_request() {
