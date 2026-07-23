@@ -3,6 +3,7 @@
 //! `src/accounts.rs`と同じ設計思想(管理者による直接登録、および
 //! 自己申請→管理者審査の2経路)。
 
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,16 +27,18 @@ fn accounts_path(data_root: &Path) -> PathBuf {
     data_root.join(".rschiketto-accounts.json")
 }
 
-pub async fn load(data_root: &Path) -> AccountStore {
-    match tokio::fs::read(accounts_path(data_root)).await {
+pub async fn load(data_root: &Path, backend: &dyn StorageBackend) -> AccountStore {
+    let path = accounts_path(data_root).to_string_lossy().to_string();
+    match backend.read(&path).await {
         Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => AccountStore::default(),
     }
 }
 
-pub async fn save(data_root: &Path, store: &AccountStore) -> std::io::Result<()> {
+pub async fn save(data_root: &Path, store: &AccountStore, backend: &dyn StorageBackend) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(store).expect("AccountStore serialization is infallible");
-    tokio::fs::write(accounts_path(data_root), bytes).await
+    let path = accounts_path(data_root).to_string_lossy().to_string();
+    backend.write(&path, &bytes).await
 }
 
 pub fn generate_request_id() -> String {
@@ -65,8 +68,8 @@ mod tests {
         let mut store = AccountStore::default();
         store.emails.insert("member@example.com".to_string());
         store.pending_requests.push(AccessRequest { id: "abc".to_string(), email: "pending@example.com".to_string(), message: None });
-        save(&dir, &store).await.unwrap();
-        let loaded = load(&dir).await;
+        save(&dir, &store, &crate::storage::LocalFsBackend).await.unwrap();
+        let loaded = load(&dir, &crate::storage::LocalFsBackend).await;
         assert!(loaded.emails.contains("member@example.com"));
         assert_eq!(loaded.pending_requests.len(), 1);
         tokio::fs::remove_dir_all(&dir).await.ok();
@@ -76,7 +79,7 @@ mod tests {
     async fn missing_store_file_loads_as_default() {
         let dir = std::env::temp_dir().join(format!("rschiketto-accounts-test-missing-{}", generate_request_id()));
         // deliberately do not create the directory/file
-        let loaded = load(&dir).await;
+        let loaded = load(&dir, &crate::storage::LocalFsBackend).await;
         assert!(loaded.emails.is_empty());
         assert!(loaded.pending_requests.is_empty());
     }

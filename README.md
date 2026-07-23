@@ -57,6 +57,33 @@ wasm-bindgen --target web --no-typescript --out-dir pkg target/wasm32-unknown-un
 | `GET /api/wiki/:id` / `PUT /api/wiki/:id` | Wikiページ取得(改訂履歴含む、閲覧権限が必要) / 新しいリビジョンを追記(編集権限が必要、旧版は履歴に保持) |
 | `DELETE /api/wiki/:id` | Wikiページ削除(管理者のみ) |
 
+## DDNS運用(固定IPを持たないネット回線向け)
+
+環境変数`RSCHIKETTO_DDNS_UPDATE_URL`に、現在のグローバルIPを埋め込みたい
+箇所を`{ip}`と書いたURLを設定すると、5分ごとにグローバルIPを確認し、
+変化していれば自動更新する(既定オフのオプトイン機能、固定IP環境では
+不要)。例(DuckDNS):
+
+```
+RSCHIKETTO_DDNS_UPDATE_URL=https://www.duckdns.org/update?domains=myhost&token=xxxx&ip={ip}
+```
+
+Windows/Linuxのネイティブバイナリで動作する。**Android版でこの常駐更新が
+実際に使えるのは、APK化(未着手)完了後**——現時点のAndroid版の位置づけ
+について正直に記載しておく(詳細は`CLAUDE.md`のHANDOFF節)。
+
+## データ/DB保存先の選択(`StorageBackend`)
+
+環境変数`RSCHIKETTO_STORAGE_BACKEND`(`local`/`sftp`/`gdrive`、既定`local`)
+で選択できる想定の抽象化を`src/storage.rs`に実装済み。**現状
+`LocalFsBackend`(ローカルHDD/SSD/NVMe直書き)のみが実際に動作する**——
+`SftpBackend`(VPS/レンタルサーバー向け、`ssh2`crateベース)と
+`GDriveBackend`(Googleドライブ向け、`reqwest`でREST API直叩き)は型と
+一部ロジックまでの実装で、実サーバー・実APIキーでの到達確認は未実施
+(詳細・残作業は`CLAUDE.md`のHANDOFF節および`PORTING.md`参照)。
+Googleドライブ等クラウドAPIの利用にはユーザー自身がOAuth2認証情報を
+取得する必要があり、このソフトウェア単体で完結する機能ではない。
+
 ## インストール(ビルド済みバイナリ、インストーラー付き)
 
 タグ付きリリース(`vX.Y.Z`)ごとに、GitHub Actions

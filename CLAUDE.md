@@ -81,6 +81,127 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23(続き) DDNS運用対応と`StorageBackend`抽象化の実コード化
+  (ユーザー指示「RS-Redの実用性と完成度を高めて。特にAndroidスマホや
+  WindowsとLINUXなどでのDDNSでの運用とDATAやDBはGoogleドライブや有名な
+  クラウド保存も可能にして、レンタルサーバーのフォルダやVPSレンタル
+  サーバー」)**:
+  1. **完了・DDNS**: `src/ddns.rs`を新設。`open-web-server`の
+     `crates/open-web-server-gateway/src/ddns.rs`と同じ設計パターン
+     (汎用URLテンプレート方式、`{ip}`プレースホルダ、`api.ipify.org`で
+     のグローバルIP検知、5分間隔で変化時のみ更新)を、直接依存はせず
+     自己完結で移植。環境変数`RSCHIKETTO_DDNS_UPDATE_URL`(既存の
+     `RSCHIKETTO_*`命名規則に従う)、既定オフのオプトイン。
+     `main()`起動時に`ddns::spawn_if_configured()`を呼ぶよう配線済み。
+     **正直な開示(Android)**: Android版で実際にDDNS常駐更新が使える
+     のは、`open-web-server`と同様APK化(未着手)完了後——RS-Red自体は
+     現状Windows/Linuxネイティブバイナリとして動作する設計であり、
+     このモジュールの動作確認もそのネイティブバイナリ上に限る。
+  2. **完了・`StorageBackend`抽象化(設計スケッチ→実コード)**:
+     `src/storage.rs`を新設。`trait StorageBackend`
+     (`read`/`write`/`ensure_dir`/`exists`の最小契約、`async_trait`)、
+     `LocalFsBackend`(既定、`tokio::fs`直書きラップ、実ファイルI/Oで
+     テスト済み)、`SftpBackend`(`ssh2`crateベース、`sftp`フィーチャ
+     フラグ下、`open-web-server`が使う`russh`/`russh-sftp`とは別crateで
+     自己完結実装——直接コード共有はしない既存方針を厳守)、
+     `GDriveBackend`(`reqwest`でGoogle Drive REST APIのアップロード
+     エンドポイントを直接叩く軽量実装、OAuth2アクセストークンは
+     `RSCHIKETTO_GDRIVE_ACCESS_TOKEN`)。環境変数
+     `RSCHIKETTO_STORAGE_BACKEND`(`local`/`sftp`/`gdrive`、既定`local`)
+     で選択名を取得する`selected_backend_name()`を実装し、起動時ログに
+     出力するよう配線。
+     **正直な開示・実装範囲の限界**:
+     - `LocalFsBackend`のみが実際のI/O動作を持つ。既存の各`Store`
+       (`project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/`access.rs`)
+       の`load`/`save`は、このセッションでは**まだ`StorageBackend`経由
+       に配線していない**(従来通り`std::fs`直呼び出しのまま)——
+       トレイトと`LocalFsBackend`の実装・テストまでが今回のスコープ。
+     - `SftpBackend`の`read`/`write`/`ensure_dir`本体は
+       **プレースホルダ**(呼ぶと明示的にエラーを返す)。接続確立
+       (`connect()`、TCP+SSHハンドシェイク+パスワード認証)のコードは
+       書いたが、実SFTPサーバーが無い環境のため到達確認はしていない。
+       ユニットテストは`SftpConfig::remote_path`のパス正規化など、
+       ネットワークを伴わないロジックのみを検証(`open-web-server`の
+       `sftp.rs`のようなループバックSSHサーバーを使った実接続テストは
+       今回未実施——コスト対効果と時間制約により見送り、正直に明記)。
+     - `GDriveBackend`は`write`(アップロード)のHTTPリクエスト構築まで
+       実装したが、実Google Drive APIキーが無いため実際の到達確認は
+       していない。`read`(パスからファイルID解決)は未実装。
+       OAuth2認証情報(クライアントID/シークレット、アクセストークン)
+       はユーザー自身がGoogle Cloudプロジェクトで取得する前提であり、
+       このソフトウェア自体が代行取得することはできない。
+     - Dropbox・OneDrive等その他の「有名なクラウド保存」は未着手。
+       `StorageBackend`トレイトが汎用設計のため後から追加可能。
+  3. **検証**: `cargo build --tests`成功(warningは未配線の
+     `SftpConfig`フィールド・`GDriveConfig::from_env`の未使用警告のみ、
+     機能上の問題ではない)。`cargo test`**52件全green**
+     (既存38件+新規14件:`ddns`3件、`storage`11件——うち
+     `LocalFsBackend`3件は実ファイルI/Oで検証、他はネットワークを
+     伴わないロジック検証)。
+  - 次にすべきこと: (1) 既存`Store`群の`load`/`save`を
+    `StorageBackend`経由に実配線(既定`LocalFsBackend`で既存動作を
+    壊さない移行)、(2) `SftpBackend`の`read`/`write`/`ensure_dir`本体
+    実装+実SFTPサーバー(またはループバックSSHサーバー)での到達確認、
+    (3) `GDriveBackend`の`read`(ファイルID解決)実装+実APIキーでの
+    到達確認、(4) Android版アプリシェル(既定`gdrive`)とAPK化、
+    (5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+
+- **2026-07-23(続き) 上記(1)完了: 既存`Store`群を`StorageBackend`経由へ
+  実配線(ユーザー指示「正直な残課題をどんどん開発で解決して」)**:
+  1. **完了**: `project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/
+     `access.rs`の各`load`/`save`のシグネチャに`backend: &dyn
+     StorageBackend`引数を追加し、関数内部の`tokio::fs::read`/
+     `tokio::fs::write`直呼び出しを`backend.read(...)`/
+     `backend.write(...)`へ置き換えた(`save`系の戻り値型も
+     `std::io::Result<()>`から`anyhow::Result<()>`へ変更——呼び出し側は
+     いずれも`.map_err(|e| e.to_string())`または`.unwrap()`パターンの
+     ため無変更で通る)。
+  2. `AppState`(`main.rs`)に`backend: Arc<dyn storage::StorageBackend>`
+     フィールドを追加。`main()`は`storage::backend_from_env()`
+     (新設ファクトリ、`RSCHIKETTO_STORAGE_BACKEND`を見て現状は常に
+     `LocalFsBackend`を返す——`local`以外が指定された場合は警告ログを
+     出しつつフォールバックする、後述の理由)。全ハンドラの呼び出し
+     箇所(51箇所)を`state.backend.as_ref()`を渡す形に機械的に置換。
+     テスト側で`AppState`を直接構築する箇所(8箇所)・`data_root`変数を
+     直接使う箇所は`&storage::LocalFsBackend`を明示的に渡す形に統一。
+  3. **`backend_from_env()`が`local`以外で常にフォールバックする理由
+     (正直な開示)**: `SftpBackend`/`GDriveBackend`の`read`/`write`/
+     `ensure_dir`本体はまだプレースホルダ(エラーを返すだけ)のため、
+     `RSCHIKETTO_STORAGE_BACKEND=sftp`等を指定してもそのまま使うと
+     保存が一切できずデータを失う動作になる。それを避けるため、
+     現時点では`local`以外が指定されたら警告ログを出して
+     `LocalFsBackend`にフォールバックする安全側の判断とした
+     ——`SftpBackend`/`GDriveBackend`の本体実装(下記(2)(3))が
+     完了した時点でこのフォールバックを外す。
+  4. **検証**: `cargo build --tests`成功(warningは未配線の
+     `SftpConfig`フィールド等のみ、機能上の問題なし)。`cargo test`
+     **52件全green**(既存の全テストが挙動を変えず通過——
+     `LocalFsBackend`は既存の`std::fs`直書きの単純なラップのため、
+     置き換え後もローカルディスクへの読み書き結果は完全に同一)。
+  - 次にすべきこと: (1) `SftpBackend`の`read`/`write`/`ensure_dir`本体
+    実装+実SFTPサーバー(またはループバックSSHサーバー)での到達確認、
+    (2) `GDriveBackend`の`read`(ファイルID解決)実装+実APIキーでの
+    到達確認、(3) 上記(1)(2)完了後に`backend_from_env()`の
+    フォールバックを解除、(4) Android版アプリシェル(既定`gdrive`)と
+    APK化、(5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+
+- **課題(次回対応、2026-07-23発見)**: 実ブラウザでOTPログインを試すと
+  `login-status`に「SMTP未設定のため、このサーバーではOTP送信できません。」
+  と表示される(`web/src/lib.rs:165`、バックエンドが`503`を返した場合の
+  文言)。原因はサーバー起動時にSMTP関連の環境変数(`mail.rs`が読む
+  `RSCHIKETTO_SMTP_*`系、`RS-Git`から移植したものと同じ命名規則)が
+  未設定のため、OTPメール送信機能自体が無効化された状態で動いている
+  ことによる——実装のバグではなく設定不足だが、**このままではOTP
+  ログインという認証の入口自体が機能せず、GUIを実際に使い始められない**
+  という運用上のブロッカーになっている。次回対応: (1) README/PORTING.md
+  に必要な環境変数一覧(SMTPホスト・ポート・認証情報・送信元アドレス)を
+  明記したセットアップ手順を追加する、(2) 開発・デモ用途では実SMTP
+  サーバーを用意しなくても動作確認できる代替手段(例: ログにOTPコードを
+  出力する開発用モード、または`RS-Git`側に同種の対応が既にあれば
+  それを移植する)の追加を検討する。
+
 - **2026-07-23(続き) チケットにガントチャート用フィールドを追加、
   一覧APIにステータス/プロジェクトの絞り込みフィルタを追加(Redmine
   機能ギャップを埋めるタスク、優先度1〈ガントチャート〉と3〈フィルタ・

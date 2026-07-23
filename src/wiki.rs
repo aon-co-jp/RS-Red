@@ -6,6 +6,7 @@
 //! (Redmineのページ履歴に相当する最小実装、差分表示は今回スコープ外)。
 //! 永続化は既存モジュールと同じJSONファイルパターン。
 
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -65,16 +66,18 @@ fn wiki_path(data_root: &Path) -> PathBuf {
     data_root.join("wiki.json")
 }
 
-pub async fn load(data_root: &Path) -> WikiStore {
-    match tokio::fs::read(wiki_path(data_root)).await {
+pub async fn load(data_root: &Path, backend: &dyn StorageBackend) -> WikiStore {
+    let path = wiki_path(data_root).to_string_lossy().to_string();
+    match backend.read(&path).await {
         Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => WikiStore::default(),
     }
 }
 
-pub async fn save(data_root: &Path, store: &WikiStore) -> std::io::Result<()> {
+pub async fn save(data_root: &Path, store: &WikiStore, backend: &dyn StorageBackend) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(store).expect("WikiStore serialization is infallible");
-    tokio::fs::write(wiki_path(data_root), bytes).await
+    let path = wiki_path(data_root).to_string_lossy().to_string();
+    backend.write(&path, &bytes).await
 }
 
 #[cfg(test)]
@@ -100,9 +103,9 @@ mod tests {
             title: "Getting Started".to_string(),
             revisions: vec![revision("hello")],
         });
-        save(&dir, &store).await.unwrap();
+        save(&dir, &store, &crate::storage::LocalFsBackend).await.unwrap();
 
-        let loaded = load(&dir).await;
+        let loaded = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(loaded.pages.len(), 1);
         assert_eq!(loaded.for_project(3).len(), 1);
         assert_eq!(loaded.for_project(999).len(), 0);
@@ -135,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn load_missing_file_returns_default() {
         let dir = std::env::temp_dir().join(format!("rschiketto-wiki-missing-{}", std::process::id()));
-        let store = load(&dir).await;
+        let store = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(store.pages.len(), 0);
         assert_eq!(store.next_id, 0);
     }

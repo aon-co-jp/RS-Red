@@ -22,3 +22,9 @@ rand = "0.8"
 sha2 = "0.10"
 thiserror = "1"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+async-trait = "0.1"
+ssh2 = { version = "0.9", optional = true }
+
+[features]
+sftp = ["dep:ssh2"]

@@ -24,9 +24,11 @@ mod access;
 mod accounts;
 mod auth;
 mod comments;
+mod ddns;
 mod mail;
 mod project;
 mod rustjson;
+mod storage;
 mod wiki;
 
 use std::path::PathBuf;
@@ -51,6 +53,10 @@ struct AppState {
     /// `RSCHIKETTO_ACCOUNTS_LOCKED`(既定`true`)。`RGit`と同じ方針で、
     /// ロック中は管理者以外のアカウント登録・申請承認を拒否する。
     accounts_locked: bool,
+    /// データ/DB永続化の実I/O先(`RSCHIKETTO_STORAGE_BACKEND`で選択、
+    /// 既定は`LocalFsBackend`)。全`Store`の`load`/`save`はこれ経由で
+    /// I/Oを行う(`storage.rs`参照)。
+    backend: Arc<dyn storage::StorageBackend>,
 }
 
 fn require_admin_session(req: &Request, state: &AppState) -> PoemResult<()> {
@@ -82,7 +88,7 @@ async fn check_project_access(req: &Request, state: &AppState, project_id: u64, 
             return Ok(());
         }
     }
-    let config = access::load(&state.data_root, project_id).await;
+    let config = access::load(&state.data_root, project_id, state.backend.as_ref()).await;
     if access::is_allowed(&config, need, email.as_deref()) {
         return Ok(());
     }
@@ -115,7 +121,7 @@ async fn create_project(req: &Request, state: Data<&AppState>, body: poem::web::
     if body.name.trim().is_empty() {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("name must not be empty"));
     }
-    let mut store = project::load(&state.data_root).await;
+    let mut store = project::load(&state.data_root, state.backend.as_ref()).await;
     if let Some(parent_id) = body.parent_id {
         if !store.exists(parent_id) {
             return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("parent_id does not refer to an existing project"));
@@ -133,7 +139,7 @@ async fn create_project(req: &Request, state: Data<&AppState>, body: poem::web::
         updated_at: now,
     };
     store.projects.push(proj.clone());
-    project::save(&state.data_root, &store)
+    project::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder()
@@ -147,14 +153,14 @@ async fn create_project(req: &Request, state: Data<&AppState>, body: poem::web::
 /// 中身は`access.rs`のアクセス制御で個別に守られる)。
 #[handler]
 async fn list_projects(state: Data<&AppState>) -> PoemResult<Response> {
-    let store = project::load(&state.data_root).await;
+    let store = project::load(&state.data_root, state.backend.as_ref()).await;
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&store.projects).unwrap_or_default()))
 }
 
 /// `GET /api/projects/:id` — プロジェクト詳細。
 #[handler]
 async fn get_project(PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
-    let store = project::load(&state.data_root).await;
+    let store = project::load(&state.data_root, state.backend.as_ref()).await;
     match store.find(id) {
         Some(proj) => Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(proj).unwrap_or_default())),
         None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found")),
@@ -193,7 +199,7 @@ async fn update_project(
     body: poem::web::Json<UpdateProjectRequest>,
 ) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let mut store = project::load(&state.data_root).await;
+    let mut store = project::load(&state.data_root, state.backend.as_ref()).await;
     if !store.exists(id) {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
     }
@@ -223,7 +229,7 @@ async fn update_project(
     }
     proj.updated_at = project::now_rfc3339();
     let updated = proj.clone();
-    project::save(&state.data_root, &store)
+    project::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
@@ -234,7 +240,7 @@ async fn update_project(
 /// 認証不要(`list_projects`/`get_project`と同じ「存在自体は隠さない」方針)。
 #[handler]
 async fn list_project_children(PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
-    let store = project::load(&state.data_root).await;
+    let store = project::load(&state.data_root, state.backend.as_ref()).await;
     if !store.exists(id) {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
     }
@@ -250,13 +256,13 @@ async fn list_project_children(PathExtractor(id): PathExtractor<u64>, state: Dat
 #[handler]
 async fn delete_project(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let mut store = project::load(&state.data_root).await;
+    let mut store = project::load(&state.data_root, state.backend.as_ref()).await;
     let before = store.projects.len();
     store.projects.retain(|p| p.id != id);
     if store.projects.len() == before {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
     }
-    project::save(&state.data_root, &store)
+    project::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
@@ -338,7 +344,7 @@ fn done_ratio_out_of_range(ratio: u8) -> bool {
 /// `project_id`が実在しない場合は`400`で拒否する。
 #[handler]
 async fn create_ticket(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateTicketRequest>) -> PoemResult<Response> {
-    let projects = project::load(&state.data_root).await;
+    let projects = project::load(&state.data_root, state.backend.as_ref()).await;
     if !projects.exists(body.project_id) {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("project_id does not refer to an existing project"));
     }
@@ -426,7 +432,7 @@ async fn list_tickets(req: &Request, state: Data<&AppState>) -> PoemResult<Respo
             visible.push(ticket.clone());
             continue;
         }
-        let config = access::load(&state.data_root, ticket.project_id).await;
+        let config = access::load(&state.data_root, ticket.project_id, state.backend.as_ref()).await;
         if access::is_allowed(&config, access::Need::View, email.as_deref()) {
             visible.push(ticket.clone());
         }
@@ -539,12 +545,12 @@ async fn create_comment(
     if body.body.trim().is_empty() {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("body must not be empty"));
     }
-    let mut store = comments::load(&state.data_root).await;
+    let mut store = comments::load(&state.data_root, state.backend.as_ref()).await;
     let id = store.next_id;
     store.next_id += 1;
     let comment = comments::Comment { id, ticket_id, author_email, body: body.body.clone(), created_at: project::now_rfc3339() };
     store.comments.push(comment.clone());
-    comments::save(&state.data_root, &store)
+    comments::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder()
@@ -563,7 +569,7 @@ async fn list_comments(req: &Request, PathExtractor(ticket_id): PathExtractor<u6
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("ticket not found"));
     };
     check_project_access(req, &state, ticket.project_id, access::Need::View).await?;
-    let store = comments::load(&state.data_root).await;
+    let store = comments::load(&state.data_root, state.backend.as_ref()).await;
     let visible: Vec<&comments::Comment> = store.for_ticket(ticket_id);
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&visible).unwrap_or_default()))
 }
@@ -576,7 +582,7 @@ async fn delete_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, st
     let Some(email) = session_email(req, &state) else {
         return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
     };
-    let mut store = comments::load(&state.data_root).await;
+    let mut store = comments::load(&state.data_root, state.backend.as_ref()).await;
     let Some(comment) = store.find(id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("comment not found"));
     };
@@ -586,7 +592,7 @@ async fn delete_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, st
         return Err(poem::Error::from_string("only the comment author or an admin may delete this comment", poem::http::StatusCode::FORBIDDEN));
     }
     store.comments.retain(|c| c.id != id);
-    comments::save(&state.data_root, &store)
+    comments::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
@@ -609,7 +615,7 @@ async fn create_wiki_page(
     state: Data<&AppState>,
     body: poem::web::Json<CreateWikiPageRequest>,
 ) -> PoemResult<Response> {
-    let projects = project::load(&state.data_root).await;
+    let projects = project::load(&state.data_root, state.backend.as_ref()).await;
     if !projects.exists(project_id) {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
     }
@@ -620,7 +626,7 @@ async fn create_wiki_page(
     if body.slug.trim().is_empty() || body.title.trim().is_empty() || body.body.trim().is_empty() {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("slug, title and body must not be empty"));
     }
-    let mut store = wiki::load(&state.data_root).await;
+    let mut store = wiki::load(&state.data_root, state.backend.as_ref()).await;
     if store.slug_taken(project_id, &body.slug) {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("slug already in use for this project"));
     }
@@ -634,7 +640,7 @@ async fn create_wiki_page(
         revisions: vec![wiki::WikiRevision { body: body.body.clone(), author_email, created_at: project::now_rfc3339() }],
     };
     store.pages.push(page.clone());
-    wiki::save(&state.data_root, &store)
+    wiki::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder()
@@ -647,12 +653,12 @@ async fn create_wiki_page(
 /// (対象プロジェクトへの`Need::View`権限が必要)。
 #[handler]
 async fn list_wiki_pages(req: &Request, PathExtractor(project_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
-    let projects = project::load(&state.data_root).await;
+    let projects = project::load(&state.data_root, state.backend.as_ref()).await;
     if !projects.exists(project_id) {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("project not found"));
     }
     check_project_access(req, &state, project_id, access::Need::View).await?;
-    let store = wiki::load(&state.data_root).await;
+    let store = wiki::load(&state.data_root, state.backend.as_ref()).await;
     let pages = store.for_project(project_id);
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&pages).unwrap_or_default()))
 }
@@ -662,7 +668,7 @@ async fn list_wiki_pages(req: &Request, PathExtractor(project_id): PathExtractor
 /// チェック」の順序)。
 #[handler]
 async fn get_wiki_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
-    let store = wiki::load(&state.data_root).await;
+    let store = wiki::load(&state.data_root, state.backend.as_ref()).await;
     let Some(page) = store.find(id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
     };
@@ -687,7 +693,7 @@ async fn update_wiki_page(
     state: Data<&AppState>,
     body: poem::web::Json<UpdateWikiPageRequest>,
 ) -> PoemResult<Response> {
-    let mut store = wiki::load(&state.data_root).await;
+    let mut store = wiki::load(&state.data_root, state.backend.as_ref()).await;
     let Some(project_id) = store.find(id).map(|p| p.project_id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
     };
@@ -704,7 +710,7 @@ async fn update_wiki_page(
     }
     page.revisions.push(wiki::WikiRevision { body: body.body.clone(), author_email, created_at: project::now_rfc3339() });
     let updated = page.clone();
-    wiki::save(&state.data_root, &store)
+    wiki::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
@@ -715,12 +721,12 @@ async fn update_wiki_page(
 #[handler]
 async fn delete_wiki_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let mut store = wiki::load(&state.data_root).await;
+    let mut store = wiki::load(&state.data_root, state.backend.as_ref()).await;
     if store.find(id).is_none() {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("wiki page not found"));
     }
     store.pages.retain(|p| p.id != id);
-    wiki::save(&state.data_root, &store)
+    wiki::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
@@ -850,7 +856,7 @@ async fn healthz() -> &'static str {
 async fn request_otp(state: Data<&AppState>, body: poem::web::Json<serde_json::Value>) -> PoemResult<Response> {
     let email = body.get("email").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if email != state.admin_email {
-        let registered = accounts::load(&state.data_root).await;
+        let registered = accounts::load(&state.data_root, state.backend.as_ref()).await;
         if !registered.emails.contains(&email) {
             return Ok(Response::builder().status(poem::http::StatusCode::FORBIDDEN).body("email not registered"));
         }
@@ -917,9 +923,9 @@ async fn add_account(req: &Request, state: Data<&AppState>, body: poem::web::Jso
             .status(poem::http::StatusCode::FORBIDDEN)
             .body("account registration is currently restricted to the administrator email only"));
     }
-    let mut store = accounts::load(&state.data_root).await;
+    let mut store = accounts::load(&state.data_root, state.backend.as_ref()).await;
     store.emails.insert(email);
-    accounts::save(&state.data_root, &store)
+    accounts::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::CREATED).body("ok"))
@@ -929,7 +935,7 @@ async fn add_account(req: &Request, state: Data<&AppState>, body: poem::web::Jso
 #[handler]
 async fn list_accounts(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let store = accounts::load(&state.data_root).await;
+    let store = accounts::load(&state.data_root, state.backend.as_ref()).await;
     let mut emails: Vec<&String> = store.emails.iter().collect();
     emails.sort();
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&emails).unwrap_or_default()))
@@ -951,10 +957,10 @@ async fn request_access(state: Data<&AppState>, body: poem::web::Json<AccessRequ
     if !email.contains('@') {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("invalid email"));
     }
-    let mut store = accounts::load(&state.data_root).await;
+    let mut store = accounts::load(&state.data_root, state.backend.as_ref()).await;
     let id = accounts::generate_request_id();
     store.pending_requests.push(accounts::AccessRequest { id, email: email.clone(), message: body.message.clone() });
-    accounts::save(&state.data_root, &store)
+    accounts::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     if let Some(smtp) = state.smtp.clone() {
@@ -969,7 +975,7 @@ async fn request_access(state: Data<&AppState>, body: poem::web::Json<AccessRequ
 #[handler]
 async fn list_access_requests(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let store = accounts::load(&state.data_root).await;
+    let store = accounts::load(&state.data_root, state.backend.as_ref()).await;
     Ok(Response::builder()
         .status(poem::http::StatusCode::OK)
         .content_type("application/json")
@@ -1001,14 +1007,14 @@ async fn decide_access_request(
     body: poem::web::Json<DecideAccessRequestPayload>,
 ) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
-    let mut store = accounts::load(&state.data_root).await;
+    let mut store = accounts::load(&state.data_root, state.backend.as_ref()).await;
     let Some(pos) = store.pending_requests.iter().position(|r| r.id == id) else {
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("request not found"));
     };
     let request = store.pending_requests.remove(pos);
 
     if body.approve && state.accounts_locked && request.email != state.admin_email {
-        accounts::save(&state.data_root, &store)
+        accounts::save(&state.data_root, &store, state.backend.as_ref())
             .await
             .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
         return Ok(Response::builder()
@@ -1019,15 +1025,15 @@ async fn decide_access_request(
     if body.approve {
         store.emails.insert(request.email.clone());
     }
-    accounts::save(&state.data_root, &store)
+    accounts::save(&state.data_root, &store, state.backend.as_ref())
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
 
     if body.approve {
         if let Some(pid) = body.project_id {
-            let mut config = access::load(&state.data_root, pid).await;
+            let mut config = access::load(&state.data_root, pid, state.backend.as_ref()).await;
             config.accounts.insert(request.email.clone(), access::AccountPermission { allow_view: body.allow_view, allow_edit: body.allow_edit });
-            access::save(&state.data_root, pid, &config)
+            access::save(&state.data_root, pid, &config, state.backend.as_ref())
                 .await
                 .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
         }
@@ -1089,7 +1095,11 @@ async fn main() -> anyhow::Result<()> {
     if accounts_locked {
         tracing::info!("account registration is locked to the admin email only (RSCHIKETTO_ACCOUNTS_LOCKED=false to lift)");
     }
-    let state = AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email, smtp, accounts_locked };
+    let backend = storage::backend_from_env();
+    let state = AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email, smtp, accounts_locked, backend };
+
+    tracing::info!("storage backend: {} (RSCHIKETTO_STORAGE_BACKEND)", storage::selected_backend_name());
+    ddns::spawn_if_configured();
 
     let app = build_routes(state);
 
@@ -1123,7 +1133,7 @@ mod handler_tests {
     async fn make_state(label: &str, accounts_locked: bool) -> AppState {
         let data_root = temp_dir(label);
         tokio::fs::create_dir_all(&data_root).await.unwrap();
-        AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked }
+        AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked, backend: std::sync::Arc::new(storage::LocalFsBackend) }
     }
 
     /// 管理者としてログイン済みのセッショントークンを、OTPフローを経由
@@ -1187,7 +1197,7 @@ mod handler_tests {
             .await;
         resp.assert_status(poem::http::StatusCode::CREATED);
 
-        let store = accounts::load(&data_root).await;
+        let store = accounts::load(&data_root, &storage::LocalFsBackend).await;
         assert_eq!(store.pending_requests.len(), 1);
         assert_eq!(store.pending_requests[0].email, "newcomer@example.com");
     }
@@ -1208,7 +1218,7 @@ mod handler_tests {
             .await
             .assert_status(poem::http::StatusCode::CREATED);
 
-        let store = accounts::load(&data_root).await;
+        let store = accounts::load(&data_root, &storage::LocalFsBackend).await;
         let request_id = store.pending_requests[0].id.clone();
 
         // 管理者セッションで承認、project_id=42へview権限を付与。
@@ -1226,12 +1236,12 @@ mod handler_tests {
         resp.assert_status_is_ok();
 
         // 承認によりaccounts一覧へ追加されていること。
-        let updated_store = accounts::load(&data_root).await;
+        let updated_store = accounts::load(&data_root, &storage::LocalFsBackend).await;
         assert!(updated_store.emails.contains("member@example.com"));
         assert!(updated_store.pending_requests.is_empty());
 
         // access::AccessConfigへ期待した許可が書き込まれていること。
-        let config = access::load(&data_root, 42).await;
+        let config = access::load(&data_root, 42, &storage::LocalFsBackend).await;
         let perm = config.accounts.get("member@example.com").expect("member should have an access grant");
         assert!(perm.allow_view);
         assert!(!perm.allow_edit);
@@ -1255,7 +1265,7 @@ mod handler_tests {
             .await
             .assert_status(poem::http::StatusCode::CREATED);
 
-        let store = accounts::load(&data_root).await;
+        let store = accounts::load(&data_root, &storage::LocalFsBackend).await;
         let request_id = store.pending_requests[0].id.clone();
 
         // 管理者セッションであっても、承認対象が管理者メール以外かつ
@@ -1270,7 +1280,7 @@ mod handler_tests {
 
         // 拒否されても申請自体はpendingリストから取り除かれ、emailsには
         // 追加されていないこと(main.rsの実装通り)。
-        let after = accounts::load(&data_root).await;
+        let after = accounts::load(&data_root, &storage::LocalFsBackend).await;
         assert!(!after.emails.contains("outsider@example.com"));
     }
 
@@ -1396,14 +1406,14 @@ mod handler_tests {
 
         // access::AccessConfigへ直接member@example.comへのedit許可を書き込み、
         // 実際にAuthStoreでセッションを発行してから許可されることを確認する。
-        let mut config = access::load(&data_root, project_id).await;
+        let mut config = access::load(&data_root, project_id, &storage::LocalFsBackend).await;
         config.accounts.insert("member@example.com".to_string(), access::AccountPermission { allow_view: true, allow_edit: true });
-        access::save(&data_root, project_id, &config).await.unwrap();
+        access::save(&data_root, project_id, &config, &storage::LocalFsBackend).await.unwrap();
 
         // 新しいAppStateを同じdata_rootで作り直し(auth::AuthStoreは
         // プロセスごとに新規になるため、このAppStateに対応する
         // TestClientでセッションを発行して検証する)。
-        let state2 = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let state2 = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let member_session = state2.auth.create_session("member@example.com");
         let app2 = build_routes(state2);
         let client2 = TestClient::new(app2);
@@ -1417,7 +1427,7 @@ mod handler_tests {
         resp.assert_status(poem::http::StatusCode::CREATED);
 
         // 別の(許可されていない)一般ユーザーは403。
-        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let stranger_session = stranger_state.auth.create_session("stranger@example.com");
         let stranger_app = build_routes(stranger_state);
         let stranger_client = TestClient::new(stranger_app);
@@ -1526,7 +1536,7 @@ mod handler_tests {
             .assert_status(poem::http::StatusCode::UNAUTHORIZED);
 
         // editが無い一般ユーザーは403。
-        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let stranger_session = stranger_state.auth.create_session("stranger@example.com");
         let stranger_app = build_routes(stranger_state);
         let stranger_client = TestClient::new(stranger_app);
@@ -1539,10 +1549,10 @@ mod handler_tests {
             .assert_status(poem::http::StatusCode::FORBIDDEN);
 
         // editを付与されたメンバーは投稿できる。
-        let mut config = access::load(&data_root, project_id).await;
+        let mut config = access::load(&data_root, project_id, &storage::LocalFsBackend).await;
         config.accounts.insert("member@example.com".to_string(), access::AccountPermission { allow_view: true, allow_edit: true });
-        access::save(&data_root, project_id, &config).await.unwrap();
-        let member_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        access::save(&data_root, project_id, &config, &storage::LocalFsBackend).await.unwrap();
+        let member_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let member_session = member_state.auth.create_session("member@example.com");
         let member_app = build_routes(member_state);
         let member_client = TestClient::new(member_app);
@@ -1597,7 +1607,7 @@ mod handler_tests {
         client.get(format!("/api/tickets/{ticket_id}/comments")).send().await.assert_status(poem::http::StatusCode::UNAUTHORIZED);
 
         // 権限の無い一般ユーザーは403。
-        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let stranger_session = stranger_state.auth.create_session("stranger@example.com");
         let stranger_app = build_routes(stranger_state);
         let stranger_client = TestClient::new(stranger_app);
@@ -1609,10 +1619,10 @@ mod handler_tests {
             .assert_status(poem::http::StatusCode::FORBIDDEN);
 
         // view権限を付与されたメンバーは200でコメント一覧を取得できる。
-        let mut config = access::load(&data_root, project_id).await;
+        let mut config = access::load(&data_root, project_id, &storage::LocalFsBackend).await;
         config.accounts.insert("viewer@example.com".to_string(), access::AccountPermission { allow_view: true, allow_edit: false });
-        access::save(&data_root, project_id, &config).await.unwrap();
-        let viewer_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        access::save(&data_root, project_id, &config, &storage::LocalFsBackend).await.unwrap();
+        let viewer_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let viewer_session = viewer_state.auth.create_session("viewer@example.com");
         let viewer_app = build_routes(viewer_state);
         let viewer_client = TestClient::new(viewer_app);
@@ -1677,7 +1687,7 @@ mod handler_tests {
             .assert_status(poem::http::StatusCode::BAD_REQUEST);
 
         // editが無い一般ユーザーは改訂できない(403)。
-        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true };
+        let stranger_state = AppState { data_root: data_root.clone(), auth: Arc::new(auth::AuthStore::default()), admin_email: ADMIN_EMAIL.to_string(), smtp: None, accounts_locked: true, backend: std::sync::Arc::new(storage::LocalFsBackend) };
         let stranger_session = stranger_state.auth.create_session("stranger@example.com");
         let stranger_app = build_routes(stranger_state);
         let stranger_client = TestClient::new(stranger_app);

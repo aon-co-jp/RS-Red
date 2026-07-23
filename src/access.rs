@@ -3,6 +3,7 @@
 //! 同じ設計思想を、Git forgeの「public/group/push」から
 //! チケット管理向けの「private/public、閲覧/編集」に簡略化して移植。
 
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,16 +76,18 @@ fn access_path(data_root: &Path, project_id: u64) -> PathBuf {
     data_root.join(format!("project-{project_id}-access.json"))
 }
 
-pub async fn load(data_root: &Path, project_id: u64) -> AccessConfig {
-    match tokio::fs::read(access_path(data_root, project_id)).await {
+pub async fn load(data_root: &Path, project_id: u64, backend: &dyn StorageBackend) -> AccessConfig {
+    let path = access_path(data_root, project_id).to_string_lossy().to_string();
+    match backend.read(&path).await {
         Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => AccessConfig::default(),
     }
 }
 
-pub async fn save(data_root: &Path, project_id: u64, config: &AccessConfig) -> std::io::Result<()> {
+pub async fn save(data_root: &Path, project_id: u64, config: &AccessConfig, backend: &dyn StorageBackend) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(config).expect("AccessConfig serialization is infallible");
-    tokio::fs::write(access_path(data_root, project_id), bytes).await
+    let path = access_path(data_root, project_id).to_string_lossy().to_string();
+    backend.write(&path, &bytes).await
 }
 
 #[cfg(test)]

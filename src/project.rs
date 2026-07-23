@@ -5,6 +5,7 @@
 //! 永続化は既存の`accounts.rs`/`main.rs`のTicketStoreと同じJSONファイル
 //! パターンを踏襲。
 
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -68,16 +69,18 @@ fn projects_path(data_root: &Path) -> PathBuf {
     data_root.join("projects.json")
 }
 
-pub async fn load(data_root: &Path) -> ProjectStore {
-    match tokio::fs::read(projects_path(data_root)).await {
+pub async fn load(data_root: &Path, backend: &dyn StorageBackend) -> ProjectStore {
+    let path = projects_path(data_root).to_string_lossy().to_string();
+    match backend.read(&path).await {
         Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => ProjectStore::default(),
     }
 }
 
-pub async fn save(data_root: &Path, store: &ProjectStore) -> std::io::Result<()> {
+pub async fn save(data_root: &Path, store: &ProjectStore, backend: &dyn StorageBackend) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(store).expect("ProjectStore serialization is infallible");
-    tokio::fs::write(projects_path(data_root), bytes).await
+    let path = projects_path(data_root).to_string_lossy().to_string();
+    backend.write(&path, &bytes).await
 }
 
 pub fn now_rfc3339() -> String {
@@ -108,9 +111,9 @@ mod tests {
             created_at: now_rfc3339(),
             updated_at: now_rfc3339(),
         });
-        save(&dir, &store).await.unwrap();
+        save(&dir, &store, &crate::storage::LocalFsBackend).await.unwrap();
 
-        let loaded = load(&dir).await;
+        let loaded = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(loaded.projects[0].name, "demo");
         assert!(loaded.exists(id));
@@ -147,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn load_missing_file_returns_default() {
         let dir = std::env::temp_dir().join(format!("rschiketto-project-missing-{}", std::process::id()));
-        let store = load(&dir).await;
+        let store = load(&dir, &crate::storage::LocalFsBackend).await;
         assert_eq!(store.projects.len(), 0);
         assert_eq!(store.next_id, 0);
     }
