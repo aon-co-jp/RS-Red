@@ -219,11 +219,15 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
   - 次にすべきこと: (1) 実SFTPサーバーまたはループバックSSHサーバーでの
     `SftpBackend`到達確認、(2) 実Google Drive APIキーでの`GDriveBackend`
     到達確認、(3) 上記完了後に`backend_from_env()`のフォールバックを
-    解除、(4) Android版アプリシェル(既定`gdrive`)とAPK化(`cargo ndk`
-    によるクロスコンパイル自体は過去セッションで`rs-chiketto`が
-    aarch64-linux-androidへゼロ問題でビルド可能と確認済み)、
+    解除、(4) Android版アプリシェル(既定`gdrive`)とAPK化、
     (5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
     カレンダーのGUI実装。
+  - **Android クロスコンパイル再確認(2026-07-23、本セッション末尾)**:
+    `cargo ndk -t arm64-v8a build`を実行し、`rs-chiketto`が
+    aarch64-linux-android向けに(`reqwest`/`ssh2`/`async-trait`追加後の
+    今のCargo.tomlでも)警告のみ・エラーなしでビルドできることを再確認。
+    ただしこれは「クロスコンパイルが通る」ことの確認のみで、Android上での
+    実機動作・GUI/アプリシェル自体は引き続き未着手(APK化含む)。
 
 - **課題(次回対応、2026-07-23発見)**: 実ブラウザでOTPログインを試すと
   `login-status`に「SMTP未設定のため、このサーバーではOTP送信できません。」
