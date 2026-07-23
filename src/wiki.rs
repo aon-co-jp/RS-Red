@@ -67,7 +67,7 @@ fn wiki_path(data_root: &Path) -> PathBuf {
 
 pub async fn load(data_root: &Path) -> WikiStore {
     match tokio::fs::read(wiki_path(data_root)).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => WikiStore::default(),
     }
 }

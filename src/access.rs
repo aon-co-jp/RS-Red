@@ -77,7 +77,7 @@ fn access_path(data_root: &Path, project_id: u64) -> PathBuf {
 
 pub async fn load(data_root: &Path, project_id: u64) -> AccessConfig {
     match tokio::fs::read(access_path(data_root, project_id)).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(bytes) => crate::rustjson::parse_typed(&bytes).unwrap_or_default(),
         Err(_) => AccessConfig::default(),
     }
 }
