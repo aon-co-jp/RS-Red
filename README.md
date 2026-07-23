@@ -49,8 +49,8 @@ wasm-bindgen --target web --no-typescript --out-dir pkg target/wasm32-unknown-un
 | `GET /api/projects` / `POST /api/projects` | プロジェクト一覧取得(認証不要) / 新規作成(管理者のみ、`parent_id`でサブプロジェクト化可能) |
 | `GET /api/projects/:id` / `PUT /api/projects/:id` / `DELETE /api/projects/:id` | プロジェクト詳細取得(認証不要) / 更新・削除(管理者のみ、`parent_id`変更は循環参照を拒否) |
 | `GET /api/projects/:id/children` | 直接の子プロジェクト一覧(認証不要) |
-| `GET /api/tickets` / `POST /api/tickets` | チケット一覧取得(アクセス権のあるプロジェクトのみ) / 新規作成(実在する`project_id`が必要) |
-| `GET /api/tickets/:id` / `PUT /api/tickets/:id` | チケット詳細取得 / 更新(ステータス変更含む) |
+| `GET /api/tickets` / `POST /api/tickets` | チケット一覧取得(アクセス権のあるプロジェクトのみ、`status`/`project_id`クエリパラメータで絞り込み可能) / 新規作成(実在する`project_id`が必要、`start_date`/`due_date`/`done_ratio`はガントチャート用の任意フィールド) |
+| `GET /api/tickets/:id` / `PUT /api/tickets/:id` | チケット詳細取得 / 更新(ステータス・`start_date`/`due_date`/`done_ratio`の変更含む) |
 | `GET /api/tickets/:id/comments` / `POST /api/tickets/:id/comments` | コメント一覧取得(閲覧権限が必要) / 投稿(編集権限が必要) |
 | `DELETE /api/comments/:id` | コメント削除(管理者または投稿者本人のみ) |
 | `GET /api/projects/:id/wiki` / `POST /api/projects/:id/wiki` | プロジェクト配下のWikiページ一覧(閲覧権限が必要) / 新規作成(編集権限が必要、`slug`はプロジェクト内で一意) |
