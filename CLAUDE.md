@@ -187,6 +187,44 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
     APK化、(5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
     カレンダーのGUI実装。
 
+- **2026-07-23(続き) 上記(1)(2)着手・一部完了(ユーザー指示「正直な
+  残課題をどんどん開発で解決して」の続き)**:
+  1. **完了・`GDriveBackend::read`**: `files.list`(`q=name='...' and
+     'folder_id' in parents`のクエリで名前検索、`urlencode`は依存を
+     増やさないための自前の最小実装)→`files.get?alt=media`
+     (ダウンロード)の2段階呼び出しとして実装。`reqwest`に`json`
+     フィーチャが不足していたビルドエラー(`Response::json`未検出)を
+     `Cargo.toml`で修正。単体テスト5件追加(`list_url`のクエリ組み立て・
+     `download_url`・`file_name`のパス末尾抽出・`urlencode`のエスケープ)
+     ——実APIキーが無いためHTTPリクエスト構築ロジックのみの検証である
+     ことは変わらず正直に開示。
+  2. **一部完了・`SftpBackend`本体実装**: `read`/`write`/`ensure_dir`/
+     `exists`を`ssh2`crateで実装(`tokio::task::spawn_blocking`で
+     同期APIをラップ、`write`は書き込み前に親ディレクトリを再帰
+     `mkdir`)。**正直な開示(未完了部分)**: この環境には実SFTP
+     サーバーが無く、`open-web-server`の`sftp.rs`が採用したような
+     ループバックSSHサーバー(`russh`のサーバー機能)を本セッションでは
+     追加できなかった——`ssh2`はクライアント専用crateのためテスト
+     サーバー役には使えず、サーバー側実装のコストとの兼ね合いで見送った
+     判断。よってこの`SftpBackend`は**型チェック・単体テスト(パス
+     正規化ロジックのみ)は通っているが、実ネットワーク越しの接続・
+     読み書きの到達確認はまだ一度もできていない**——実SFTPサーバー
+     環境が用意でき次第、最優先で検証すること。
+  3. `backend_from_env()`の「`local`以外は警告してフォールバック」は
+     今回も維持(上記の理由により`sftp`/`gdrive`とも実ネットワーク到達
+     未確認のため、安全側の判断を継続)。
+  4. **検証**: `cargo test`(既定)**57件全green**(52件+`GDriveBackend`
+     関連5件)。`cargo build --features sftp --tests`成功(warningは
+     未配線分のみ)。
+  - 次にすべきこと: (1) 実SFTPサーバーまたはループバックSSHサーバーでの
+    `SftpBackend`到達確認、(2) 実Google Drive APIキーでの`GDriveBackend`
+    到達確認、(3) 上記完了後に`backend_from_env()`のフォールバックを
+    解除、(4) Android版アプリシェル(既定`gdrive`)とAPK化(`cargo ndk`
+    によるクロスコンパイル自体は過去セッションで`rs-chiketto`が
+    aarch64-linux-androidへゼロ問題でビルド可能と確認済み)、
+    (5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+
 - **課題(次回対応、2026-07-23発見)**: 実ブラウザでOTPログインを試すと
   `login-status`に「SMTP未設定のため、このサーバーではOTP送信できません。」
   と表示される(`web/src/lib.rs:165`、バックエンドが`503`を返した場合の
