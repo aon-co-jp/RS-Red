@@ -26,6 +26,7 @@ mod auth;
 mod comments;
 mod mail;
 mod project;
+mod rustjson;
 mod wiki;
 
 use std::path::PathBuf;
