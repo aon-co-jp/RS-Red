@@ -81,6 +81,40 @@ VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`�
 
 ## HANDOFF
 
+- **2026-07-23(続き) チケットにガントチャート用フィールドを追加、
+  一覧APIにステータス/プロジェクトの絞り込みフィルタを追加(Redmine
+  機能ギャップを埋めるタスク、優先度1〈ガントチャート〉と3〈フィルタ・
+  検索〉のバックエンド側対応)**:
+  1. `Ticket`に`start_date: Option<String>`・`due_date: Option<String>`
+     (`YYYY-MM-DD`形式の文字列保持、パース・タイムゾーン変換は行わない)・
+     `done_ratio: u8`(0-100、範囲外は`create_ticket`/`update_ticket`
+     双方で`400`拒否)を追加。`CreateTicketRequest`/`UpdateTicketRequest`
+     にも同フィールドを追加(いずれも`Option`で省略可能、`update_ticket`
+     は指定したフィールドのみ更新する既存パターンを踏襲)。
+  2. `GET /api/tickets`に`status`(`open`/`in_progress`/`closed`)・
+     `project_id`(数値)のクエリパラメータによる絞り込みを追加。
+     `url`クレートへの新規依存を避けるため、クエリ文字列は`&`/`=`での
+     単純な自前パースとした(`status`/`project_id`は英数字のみを想定、
+     `%XX`エンコードは今回サポートしない——正直な開示)。
+  3. **未着手のまま残る項目(正直な開示)**: チケットへの`assignee`
+     (担当者)フィールド自体がまだ存在しないため、「担当者での絞り込み」
+     はタスク一覧の(3)からスコープ外とした——担当者機能自体の追加が
+     先に必要。GUI(`web/`)側でのガントチャート・カレンダー描画も
+     今回は未着手(バックエンドのフィールド・APIのみ)。通知機能
+     (`mail.rs`再利用によるチケット更新メール)も今回は未着手。
+  4. **検証**: `cargo build`警告1件(既存の`WikiPage::latest`未使用
+     警告のみ、新規警告無し)。`cargo test` **40件全green**(既存38件+
+     今回2件〈`ticket_gantt_fields_are_persisted_and_validated`:
+     作成・更新でのフィールド保存、`done_ratio`が101/255で`400`になる
+     ことを確認/`list_tickets_supports_status_and_project_id_filters`:
+     `status`単体・`project_id`単体・両方の組み合わせでの絞り込みを
+     確認〉)。
+  - 次にすべきこと: (1) GUI(`web/`)側にガントチャート・カレンダー
+    描画を実装(バックエンドのフィールドは今回追加済み)、
+    (2) チケットへの`assignee`フィールド追加(担当者フィルタの前提)、
+    (3) 通知機能(`mail.rs`再利用、チケット更新時のメール通知)、
+    (4) 実SMTP環境でのブラウザ実機E2E(前回までと同じ制約が継続)。
+
 - **2026-07-23(続き) ブラウザGUI(`web/`、Rust→WebAssembly)を新設
   ——ユーザー指示「チケット管理を行なうWEBアプリですからGUIは基本の
   はずです。充実させて下さい」への対応**:

@@ -66,4 +66,6 @@ let bytes = serde_json::to_vec_pretty(store).expect("...");
 - ストレージ先選択機能(Googleドライブ・他クラウド・VPS、`StorageBackend`
   トレイト抽象化)——構想のみ、`CLAUDE.md`参照。
 - `aruaru-db`/PostgreSQL DUAL DB構成への移行(現状はJSONファイルのみ)。
-- ガントチャート・カレンダーのGUI実装。
+- ガントチャート・カレンダーのGUI実装(バックエンド側の`Ticket.start_date`/
+  `due_date`/`done_ratio`と`GET /api/tickets`の`status`/`project_id`絞り込み
+  は2026-07-23に実装済み、`CLAUDE.md` HANDOFF参照。GUI描画は未着手)。

@@ -280,6 +280,17 @@ struct Ticket {
     /// `Project`エンティティを参照、旧`project: String`+ハッシュの
     /// 置き換え——CLAUDE.md HANDOFF「(3) Project自体のCRUD」対応)。
     project_id: u64,
+    /// ガントチャート・カレンダー用フィールド(Redmine機能ギャップ対応、
+    /// 2026-07-23追加)。日付は`YYYY-MM-DD`形式の文字列で保持し、
+    /// パース・タイムゾーン変換は行わない(既存の`created_at`等と同じ
+    /// 単純な文字列保持パターンを踏襲)。
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    due_date: Option<String>,
+    /// 進捗率(0-100)。範囲外の値はハンドラ側で`400`として拒否する。
+    #[serde(default)]
+    done_ratio: u8,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -310,6 +321,16 @@ struct CreateTicketRequest {
     description: String,
     /// 所属`Project`の`id`(実在確認は`create_ticket`内で行う)。
     project_id: u64,
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    done_ratio: Option<u8>,
+}
+
+fn done_ratio_out_of_range(ratio: u8) -> bool {
+    ratio > 100
 }
 
 /// `POST /api/tickets` — チケットを新規作成する。所属`project_id`への
@@ -325,11 +346,23 @@ async fn create_ticket(req: &Request, state: Data<&AppState>, body: poem::web::J
     if body.title.trim().is_empty() {
         return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("title must not be empty"));
     }
+    let done_ratio = body.done_ratio.unwrap_or(0);
+    if done_ratio_out_of_range(done_ratio) {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("done_ratio must be between 0 and 100"));
+    }
     let mut store = load_tickets(&state.data_root).await;
     let id = store.next_id;
     store.next_id += 1;
-    let ticket =
-        Ticket { id, title: body.title.clone(), description: body.description.clone(), status: TicketStatus::Open, project_id: body.project_id };
+    let ticket = Ticket {
+        id,
+        title: body.title.clone(),
+        description: body.description.clone(),
+        status: TicketStatus::Open,
+        project_id: body.project_id,
+        start_date: body.start_date.clone(),
+        due_date: body.due_date.clone(),
+        done_ratio,
+    };
     store.tickets.push(ticket.clone());
     save_tickets(&state.data_root, &store)
         .await
@@ -343,13 +376,52 @@ async fn create_ticket(req: &Request, state: Data<&AppState>, body: poem::web::J
 /// `GET /api/tickets` — チケット一覧。各チケットは所属`project`への
 /// `Need::View`権限がある場合のみ結果に含める(管理者は全件、
 /// 未ログインは基本的に空配列——`RGit`と同じprivate既定の考え方)。
+/// クエリパラメータ`status`(`open`/`in_progress`/`closed`)・
+/// `project_id`(数値)で絞り込み可能(Redmine機能ギャップ対応、
+/// 2026-07-23追加——`assignee`はチケットに担当者フィールド自体が
+/// まだ存在しないため今回はスコープ外、正直な開示)。
 #[handler]
 async fn list_tickets(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     let email = session_email(req, &state);
     let is_admin = email.as_deref() == Some(state.admin_email.as_str());
+    // クエリ文字列を自前でパース(`url`クレートへの新規依存を避けるため、
+    // 値に`%XX`エンコードが必要な入力〈`status`/`project_id`は英数字のみ
+    // 想定〉は今回サポートしない——正直な開示)。
+    let query: std::collections::HashMap<String, String> = req
+        .uri()
+        .query()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|pair| {
+                    let mut it = pair.splitn(2, '=');
+                    let key = it.next()?;
+                    let value = it.next().unwrap_or("");
+                    Some((key.to_string(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let status_filter: Option<TicketStatus> = query.get("status").and_then(|s| match s.as_str() {
+        "open" => Some(TicketStatus::Open),
+        "in_progress" => Some(TicketStatus::InProgress),
+        "closed" => Some(TicketStatus::Closed),
+        _ => None,
+    });
+    let project_filter: Option<u64> = query.get("project_id").and_then(|s| s.parse().ok());
     let store = load_tickets(&state.data_root).await;
     let mut visible = Vec::new();
     for ticket in &store.tickets {
+        if let Some(want) = &status_filter {
+            if !matches!((want, &ticket.status), (TicketStatus::Open, TicketStatus::Open) | (TicketStatus::InProgress, TicketStatus::InProgress) | (TicketStatus::Closed, TicketStatus::Closed))
+            {
+                continue;
+            }
+        }
+        if let Some(pid) = project_filter {
+            if ticket.project_id != pid {
+                continue;
+            }
+        }
         if is_admin {
             visible.push(ticket.clone());
             continue;
@@ -382,6 +454,12 @@ struct UpdateTicketRequest {
     title: Option<String>,
     description: Option<String>,
     status: Option<TicketStatus>,
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    done_ratio: Option<u8>,
 }
 
 /// `PUT /api/tickets/:id` — チケットのタイトル・説明・ステータスを更新する
@@ -410,6 +488,18 @@ async fn update_ticket(
     }
     if let Some(status) = &body.status {
         ticket.status = status.clone();
+    }
+    if let Some(done_ratio) = body.done_ratio {
+        if done_ratio_out_of_range(done_ratio) {
+            return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("done_ratio must be between 0 and 100"));
+        }
+        ticket.done_ratio = done_ratio;
+    }
+    if let Some(start_date) = &body.start_date {
+        ticket.start_date = Some(start_date.clone());
+    }
+    if let Some(due_date) = &body.due_date {
+        ticket.due_date = Some(due_date.clone());
     }
     let updated = ticket.clone();
     save_tickets(&state.data_root, &store)
@@ -1633,5 +1723,154 @@ mod handler_tests {
             .send()
             .await
             .assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
+
+    /// ガントチャート用フィールド(`start_date`/`due_date`/`done_ratio`)が
+    /// 作成・更新の両方で保存され、`done_ratio`の範囲外の値(101)は
+    /// `400`で拒否されることを確認する(Redmine機能ギャップ対応、
+    /// 2026-07-23追加)。
+    #[tokio::test]
+    async fn ticket_gantt_fields_are_persisted_and_validated() {
+        let state = make_state("ticket-gantt-fields", true).await;
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let created_project = client
+            .post("/api/projects")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "gantt-proj", "description": "" }))
+            .send()
+            .await;
+        created_project.assert_status(poem::http::StatusCode::CREATED);
+        let project_id = created_project.json().await.value().deserialize::<serde_json::Value>()["id"].as_u64().unwrap();
+
+        // 作成時に start_date/due_date/done_ratio を指定できる。
+        let created = client
+            .post("/api/tickets")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({
+                "title": "gantt ticket",
+                "description": "",
+                "project_id": project_id,
+                "start_date": "2026-07-01",
+                "due_date": "2026-07-31",
+                "done_ratio": 40
+            }))
+            .send()
+            .await;
+        created.assert_status(poem::http::StatusCode::CREATED);
+        let created_body: serde_json::Value = created.json().await.value().deserialize();
+        assert_eq!(created_body["start_date"], "2026-07-01");
+        assert_eq!(created_body["due_date"], "2026-07-31");
+        assert_eq!(created_body["done_ratio"], 40);
+        let ticket_id = created_body["id"].as_u64().unwrap();
+
+        // 作成時に done_ratio が範囲外(101)だと400。
+        client
+            .post("/api/tickets")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "title": "bad", "description": "", "project_id": project_id, "done_ratio": 101 }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::BAD_REQUEST);
+
+        // 更新でも同じフィールドを変更でき、範囲外は拒否される。
+        let updated = client
+            .put(format!("/api/tickets/{ticket_id}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "done_ratio": 80, "due_date": "2026-08-15" }))
+            .send()
+            .await;
+        updated.assert_status_is_ok();
+        let updated_body: serde_json::Value = updated.json().await.value().deserialize();
+        assert_eq!(updated_body["done_ratio"], 80);
+        assert_eq!(updated_body["due_date"], "2026-08-15");
+        assert_eq!(updated_body["start_date"], "2026-07-01", "unspecified fields must remain unchanged");
+
+        client
+            .put(format!("/api/tickets/{ticket_id}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "done_ratio": 255 }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// `GET /api/tickets`が`status`・`project_id`クエリパラメータで
+    /// 絞り込めることを確認する(Redmine機能ギャップ対応、フィルタ・
+    /// 検索機能、2026-07-23追加)。
+    #[tokio::test]
+    async fn list_tickets_supports_status_and_project_id_filters() {
+        let state = make_state("ticket-list-filters", true).await;
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let mut project_ids = Vec::new();
+        for name in ["proj-a", "proj-b"] {
+            let created = client
+                .post("/api/projects")
+                .header("Authorization", format!("Bearer {admin}"))
+                .body_json(&serde_json::json!({ "name": name, "description": "" }))
+                .send()
+                .await;
+            created.assert_status(poem::http::StatusCode::CREATED);
+            project_ids.push(created.json().await.value().deserialize::<serde_json::Value>()["id"].as_u64().unwrap());
+        }
+        let (proj_a, proj_b) = (project_ids[0], project_ids[1]);
+
+        // proj_a に2件(open/closed)、proj_b に1件(open)を作成する。
+        let make_ticket = |title: &'static str, project_id: u64| {
+            let client = &client;
+            let admin = admin.clone();
+            async move {
+                let resp = client
+                    .post("/api/tickets")
+                    .header("Authorization", format!("Bearer {admin}"))
+                    .body_json(&serde_json::json!({ "title": title, "description": "", "project_id": project_id }))
+                    .send()
+                    .await;
+                resp.assert_status(poem::http::StatusCode::CREATED);
+                resp.json().await.value().deserialize::<serde_json::Value>()["id"].as_u64().unwrap()
+            }
+        };
+        let a1 = make_ticket("a-open", proj_a).await;
+        let a2 = make_ticket("a-to-close", proj_a).await;
+        let _b1 = make_ticket("b-open", proj_b).await;
+
+        client
+            .put(format!("/api/tickets/{a2}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "status": "closed" }))
+            .send()
+            .await
+            .assert_status_is_ok();
+
+        // project_id での絞り込み: proj_a のみで2件。
+        let by_project =
+            client.get(format!("/api/tickets?project_id={proj_a}")).header("Authorization", format!("Bearer {admin}")).send().await;
+        by_project.assert_status_is_ok();
+        let by_project_body: serde_json::Value = by_project.json().await.value().deserialize();
+        assert_eq!(by_project_body.as_array().unwrap().len(), 2);
+
+        // status=open での絞り込み: a-open と b-open の2件。
+        let by_status = client.get("/api/tickets?status=open").header("Authorization", format!("Bearer {admin}")).send().await;
+        by_status.assert_status_is_ok();
+        let by_status_body: serde_json::Value = by_status.json().await.value().deserialize();
+        assert_eq!(by_status_body.as_array().unwrap().len(), 2);
+
+        // status=closed & project_id=proj_a の組み合わせ: a-to-close の1件のみ。
+        let combined = client
+            .get(format!("/api/tickets?status=closed&project_id={proj_a}"))
+            .header("Authorization", format!("Bearer {admin}"))
+            .send()
+            .await;
+        combined.assert_status_is_ok();
+        let combined_body: serde_json::Value = combined.json().await.value().deserialize();
+        let combined_array = combined_body.as_array().unwrap();
+        assert_eq!(combined_array.len(), 1);
+        assert_eq!(combined_array[0]["id"].as_u64().unwrap(), a2);
+        let _ = a1;
     }
 }
