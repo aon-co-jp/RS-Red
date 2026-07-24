@@ -61,6 +61,15 @@ let bytes = serde_json::to_vec_pretty(store).expect("...");
 - [open-web-server](https://github.com/aon-co-jp/open-web-server) — 「分身の術」基盤実装
 - [RPoem](https://github.com/aon-co-jp/RPoem) — アプリケーションサーバー層、RustJSONの移植元
 
+## 5.5 スマホ対応・英語(日本語)ハイブリッド表示(2026-07-24)
+
+`web/index.html`は`@media (max-width: 600px)`でスマホ縦画面向けの余白・
+フォントサイズ調整を追加し、全`button`/`input`/`textarea`/`select`に
+`min-height: 44px`(タップ操作向けタッチターゲット推奨サイズ)を適用
+している。静的HTMLシェル内のUIラベルは「英語表記の直後に(日本語)を
+括弧書き」形式(例: `Login (ログイン)`)に統一済み。`web/src/lib.rs`
+側の動的生成メッセージ(エラー文言等)は今回対象外(段階適用中)。
+
 ## 5. 未着手のまま残る移植候補(次回以降)
 
 - ストレージ先選択機能(Googleドライブ・他クラウド・VPS、`StorageBackend`

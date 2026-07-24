@@ -52,6 +52,7 @@
         color: var(--fg);
         width: 100%;
         margin-bottom: 0.5rem;
+        min-height: 44px;
       }
       button {
         background: var(--accent);
@@ -59,7 +60,9 @@
         border: none;
         cursor: pointer;
         width: auto;
-        padding: 0.5rem 1rem;
+        padding: 0.5rem 1.1rem;
+        min-height: 44px;
+        min-width: 44px;
       }
       .link-btn {
         background: none;
@@ -83,78 +86,85 @@
       }
       .muted { color: var(--muted); font-size: 0.9rem; }
       .hidden { display: none; }
+
+      /* スマホ縦画面向けレスポンシブ対応(Mobile portrait responsive layout) */
+      @media (max-width: 600px) {
+        main { padding: 0.75rem; }
+        h1 { font-size: 1.2rem; }
+        section { padding: 0.75rem; }
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>RS-Red</h1>
-      <p class="muted">Redmine互換のチケット管理・Wiki(Rust製、オンライン専用ブラウザアプリ)</p>
+      <p class="muted">Ticket Management &amp; Wiki (Redmine-compatible) (Redmine互換のチケット管理・Wiki) — Rust, online-only browser app (Rust製、オンライン専用ブラウザアプリ)</p>
 
       <section id="auth-logged-out">
-        <h2>ログイン</h2>
-        <input id="login-email" type="email" placeholder="メールアドレス" autocomplete="email" />
-        <button id="request-otp-btn">ワンタイムコードを送信</button>
-        <input id="login-code" type="text" placeholder="受信したコード" inputmode="numeric" />
-        <button id="verify-otp-btn">ログイン</button>
+        <h2>Login (ログイン)</h2>
+        <input id="login-email" type="email" placeholder="Email (メールアドレス)" autocomplete="email" />
+        <button id="request-otp-btn">Send code (ワンタイムコードを送信)</button>
+        <input id="login-code" type="text" placeholder="Received code (受信したコード)" inputmode="numeric" />
+        <button id="verify-otp-btn">Log in (ログイン)</button>
         <p id="login-status" class="muted"></p>
       </section>
 
       <section id="auth-logged-in" class="hidden">
-        <p>ログイン中: <strong id="logged-in-email"></strong></p>
-        <button id="logout-btn">ログアウト</button>
+        <p>Logged in as (ログイン中): <strong id="logged-in-email"></strong></p>
+        <button id="logout-btn">Log out (ログアウト)</button>
       </section>
 
       <div id="app-main" class="hidden">
         <section>
-          <h2>プロジェクト</h2>
+          <h2>Projects (プロジェクト)</h2>
           <ul id="project-list"></ul>
-          <input id="new-project-name" type="text" placeholder="新規プロジェクト名(管理者のみ作成可)" />
-          <button id="create-project-btn">プロジェクト作成</button>
+          <input id="new-project-name" type="text" placeholder="New project name, admin only (新規プロジェクト名・管理者のみ作成可)" />
+          <button id="create-project-btn">Create project (プロジェクト作成)</button>
         </section>
 
         <section>
-          <h2>チケット</h2>
-          <p id="selected-project-label" class="muted">プロジェクトを選択してください</p>
+          <h2>Tickets (チケット)</h2>
+          <p id="selected-project-label" class="muted">Select a project (プロジェクトを選択してください)</p>
           <input id="selected-project-id" type="hidden" value="" />
           <ul id="ticket-list"></ul>
-          <input id="new-ticket-title" type="text" placeholder="チケット件名" />
-          <textarea id="new-ticket-description" placeholder="詳細" rows="3"></textarea>
-          <button id="create-ticket-btn">チケット作成</button>
+          <input id="new-ticket-title" type="text" placeholder="Ticket title (チケット件名)" />
+          <textarea id="new-ticket-description" placeholder="Description (詳細)" rows="3"></textarea>
+          <button id="create-ticket-btn">Create ticket (チケット作成)</button>
           <p id="ticket-status" class="muted"></p>
         </section>
 
         <section id="ticket-detail" class="hidden">
           <h2 id="ticket-detail-title"></h2>
           <p id="ticket-detail-description"></p>
-          <label for="ticket-status-select">ステータス</label>
+          <label for="ticket-status-select">Status (ステータス)</label>
           <input id="selected-ticket-id" type="hidden" value="" />
           <select id="ticket-status-select">
             <option value="open">open</option>
             <option value="in_progress">in_progress</option>
             <option value="closed">closed</option>
           </select>
-          <button id="update-status-btn">ステータス更新</button>
+          <button id="update-status-btn">Update status (ステータス更新)</button>
           <p id="ticket-detail-status" class="muted"></p>
 
-          <h3>コメント</h3>
+          <h3>Comments (コメント)</h3>
           <ul id="comment-list"></ul>
-          <textarea id="new-comment-body" placeholder="コメントを入力" rows="2"></textarea>
-          <button id="post-comment-btn">コメント投稿</button>
+          <textarea id="new-comment-body" placeholder="Write a comment (コメントを入力)" rows="2"></textarea>
+          <button id="post-comment-btn">Post comment (コメント投稿)</button>
 
-          <button id="close-ticket-detail-btn">閉じる</button>
+          <button id="close-ticket-detail-btn">Close (閉じる)</button>
         </section>
 
         <section>
           <h2>Wiki</h2>
-          <button id="load-wiki-btn">選択中プロジェクトのWikiを表示</button>
+          <button id="load-wiki-btn">Show wiki for selected project (選択中プロジェクトのWikiを表示)</button>
           <p id="wiki-status" class="muted"></p>
           <ul id="wiki-list"></ul>
 
-          <h3>新規ページ作成</h3>
-          <input id="new-wiki-slug" type="text" placeholder="slug(例: getting-started)" />
-          <input id="new-wiki-title" type="text" placeholder="タイトル" />
-          <textarea id="new-wiki-body" placeholder="本文" rows="4"></textarea>
-          <button id="create-wiki-btn">Wikiページ作成</button>
+          <h3>New page (新規ページ作成)</h3>
+          <input id="new-wiki-slug" type="text" placeholder="slug (e.g. getting-started)" />
+          <input id="new-wiki-title" type="text" placeholder="Title (タイトル)" />
+          <textarea id="new-wiki-body" placeholder="Body (本文)" rows="4"></textarea>
+          <button id="create-wiki-btn">Create wiki page (Wikiページ作成)</button>
         </section>
 
         <section id="wiki-view" class="hidden">
