@@ -1,3 +1,5 @@
+> Latest translations / 翻訳の最新版: [0-LATEST-TRANSLATIONS.md](0-LATEST-TRANSLATIONS.md)
+
 # RS-Red
 
 (旧名`RS-Chiketto`、2026-07-22に`RS-Red`へ改名。公開先: `https://runo.tokyo/RS-Red`)
